@@ -1,2 +1,2 @@
-# kaggle_Biohub-Cell_Tracking_During_Development2
-kaggleのBiohub-Cell_Tracking_During_Developmentのリポジトリ
+kgle_001_BCT_Episode
+kaggleのBiohub-Cell_Tracking_During_Developmentの反省
