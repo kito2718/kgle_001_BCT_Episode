@@ -1,0 +1,40 @@
+{
+  "version": "v533_addback_edge_v1",
+  "module": "v533_addback_edge.py",
+  "module_sha256": "e508381a925b783b92939baeda6b982664c6e57a820421033dac84d8684431d5",
+  "params": {
+    "cluster": "acq_01",
+    "hole_um": 4.5,
+    "rank_mult": 1.5,
+    "nms_um": 3.0,
+    "link_gate_um": 5.0,
+    "attach_gate_um": 5.0,
+    "min_chain": 3,
+    "min_nodes": 9,
+    "near_max_um": 8.0,
+    "min_contrast": 0.1,
+    "core_um": 1.2,
+    "shell_um": [
+      5.0,
+      8.0
+    ],
+    "norm_percentiles": [
+      50.0,
+      99.5
+    ],
+    "edge_px": 1.5
+  },
+  "base_candidate": "v507_localization_fork_v1",
+  "strict_cv_score": 0.9530240468896461,
+  "strict_cv_delta_vs_v507": 0.0018068840711183976,
+  "v507_strict_cv": 0.9512171628185278,
+  "labels_read_by_module": false,
+  "learned_models": 0,
+  "new_inference_forward_passes": 0,
+  "inputs": [
+    "final V507 graph",
+    "primary V21 raw pool c21 (t,z,y,x,score,rank_in_frame)",
+    "acquisition cluster",
+    "full-resolution movie zarr"
+  ]
+}

@@ -1,0 +1,31 @@
+# PyTorch CUDA (12.4)
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+
+# Core ML & Deep Learning
+timm==1.0.30
+numpy==2.4.6
+scipy==1.17.1
+scikit-learn==1.9.1
+pandas==3.0.6
+
+# Image & Bio-formats
+opencv-python==5.0.0.93
+scikit-image==0.26.0
+tifffile==2026.3.3
+pillow==12.3.0
+
+# Array & Compression (Biohub dataset)
+zarr==2.18.7
+numcodecs==0.15.1
+blosc2==4.14.1
+
+# Graph & Utilities
+networkx==3.6.1
+tqdm==4.70.1
+
+# Kaggle & Development
+kaggle==2.2.4
+debugpy==1.8.22
+ipykernel==7.4.0

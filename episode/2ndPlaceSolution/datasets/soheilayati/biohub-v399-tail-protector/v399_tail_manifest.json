@@ -1,0 +1,8 @@
+{
+  "version": "v399_witness_free_depth5",
+  "tail_model_sha256": "c2de2d51657992dd7f44ad8ddd48097375cc6282e4efcc010c6981889258991b",
+  "metadata_sha256": "999ec85b596f87c8ea7f2dcf345fa93867ebbcaebc139ff05206e09c2250bb28",
+  "module_sha256": "0b49e1715513b6188b4f9e6cb1ab8c646729e85d17e03403a8da6eb5a2fb8261",
+  "new_forward_passes": 0,
+  "witness_matching_used": false
+}

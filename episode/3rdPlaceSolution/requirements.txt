@@ -1,0 +1,63 @@
+# =============================================================================
+# Requirements for Biohub 3rd Place Solution
+#
+# Setup with uv (recommended):
+#   uv venv .venv --python 3.12
+#   uv pip install -r requirements.txt
+#
+# Setup with standard pip:
+#   python -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+# =============================================================================
+
+# PyTorch CUDA 12.4 index
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# PyTorch (CUDA 12.4)
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+
+# Core Science & ML Packages
+numpy==2.5.2
+scipy==1.18.1
+pandas==3.1.0
+scikit-image==0.26.0
+monai==1.5.2
+timm==1.0.30
+einops==0.8.2
+omegaconf==2.4.0
+joblib==1.6.0
+cloudpickle==3.1.2
+
+# GBDT Models
+lightgbm==4.7.0
+xgboost==3.2.0
+
+# Zarr Data Format
+zarr==3.3.0
+numcodecs==0.16.5
+donfig==0.8.1.post1
+narwhals==2.25.0
+
+# TensorRT (CUDA 12)
+tensorrt-cu12==11.4.0.106
+tensorrt-cu12-bindings==11.4.0.106
+tensorrt-cu12-libs==11.4.0.106
+
+# Jupyter / Debug / Utilities
+debugpy==1.8.22
+ipykernel==7.4.0
+ipython==9.17.1
+imageio==2.38.1
+tifffile==2026.10.15
+tqdm==4.70.1
+pyyaml==6.0.3
+huggingface-hub==2.3.0
+safetensors==0.8.0
+psutil==7.2.2
+filelock==3.32.3
+networkx==3.6.1
+pillow==12.3.0
+sympy==1.13.1
+setuptools==78.1.0

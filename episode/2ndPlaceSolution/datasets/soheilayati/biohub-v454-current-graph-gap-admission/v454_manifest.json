@@ -1,0 +1,7 @@
+{
+  "version": "v454_current_graph_gap_admission_v1",
+  "module_sha256": "4d3e99b96981cae4d1d10bd0adfa5dadc736178cbaf039c57de35bd75f99f5ec",
+  "metadata_sha256": "ca43c9c18b7490e0112e79d36cf94ec358576e7c47bc836c914bf09aeec891ee",
+  "historical_training_sha256": "b03dd568cf0212b50dd616262723f730f2c96611bbed14098f4a4774873ae624",
+  "no_neural_forward_pass": true
+}

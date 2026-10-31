@@ -1,0 +1,17 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/biohub-inference",
+    "${workspaceFolder}/biohub-inference/biohub_infer"
+  ],
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/biohub-inference",
+    "${workspaceFolder}/biohub-inference/biohub_infer"
+  ],
+  "files.associations": {
+    "*.zarr": "json"
+  }
+}

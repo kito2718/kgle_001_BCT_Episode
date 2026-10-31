@@ -1,0 +1,48 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Biohub 3rd Place: Runner (biohub_inference_run.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/biohub_inference_run.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/biohub-inference"
+      }
+    },
+    {
+      "name": "Python: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/biohub-inference"
+      }
+    },
+    {
+      "name": "Biohub 3rd Place: Inference CLI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "biohub_infer",
+      "args": [
+        "--test-dir", "${workspaceFolder}/input/test",
+        "--weights", "${workspaceFolder}/biohub-weights",
+        "--work-dir", "${workspaceFolder}/work",
+        "--out", "${workspaceFolder}/submission.csv",
+        "--jobs", "1"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/biohub-inference"
+      }
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "experiment": "v57_runtime_safe_free_v39",
+  "hidden_policy": "blake2b(dataset,digest_size=8) modulo 5; one V39 route, one V38 route, the corresponding frozen V51 risk model, and the V24+Stage6+reused-V39 consensus families",
+  "omitted": [
+    "V44 midpoint bridges",
+    "V25 full tracker replay",
+    "expanded full tracker replay"
+  ],
+  "tracker_workers": 3,
+  "research_state_export": false,
+  "branch_forced_gc": false,
+  "files": [
+    {
+      "kind": "v38_detector",
+      "route": 0,
+      "name": "v38.fold0.ep05.pt",
+      "sha256": "10369eab0595bec05e3420ab0ea8902561d34bcf7d3208fcb322de0950b266d9",
+      "bytes": 14012469
+    },
+    {
+      "kind": "v38_detector",
+      "route": 1,
+      "name": "v38.fold1.ep05.pt",
+      "sha256": "a0f515874452bbd036ae6714ee8b52bf66f4ce254579dcf5a63e2c9c51f4c74a",
+      "bytes": 14012469
+    },
+    {
+      "kind": "v38_detector",
+      "route": 2,
+      "name": "v38.fold2.ep05.pt",
+      "sha256": "4906fc85fc0545f90031f8a330afffeb49844e13d9689b59f495dfa6eb651835",
+      "bytes": 14012469
+    },
+    {
+      "kind": "v38_detector",
+      "route": 3,
+      "name": "v38.fold3.ep05.pt",
+      "sha256": "208286fcd30a12535b40501fcf717ade63b3389118ff9e7aadb4ddac10d8afe9",
+      "bytes": 14012469
+    },
+    {
+      "kind": "v38_detector",
+      "route": 4,
+      "name": "v38.fold4.ep05.pt",
+      "sha256": "b3520c4d169a49dda531214b21e89f38253a20d8cb9ead6b26c548a7a94e3320",
+      "bytes": 14012469
+    },
+    {
+      "kind": "v51_edge_risk",
+      "route": 0,
+      "name": "fold0.txt",
+      "sha256": "23673dd44687e6f19ed4f92468d344b2c6a74f6a96a5db7f8ee1f9cca565a323",
+      "bytes": 1065418
+    },
+    {
+      "kind": "v51_edge_risk",
+      "route": 1,
+      "name": "fold1.txt",
+      "sha256": "e7dce544384caeb0a9d5eca9293a8fa41482f1c0e136fa7ddd11ae281f4473c2",
+      "bytes": 1066109
+    },
+    {
+      "kind": "v51_edge_risk",
+      "route": 2,
+      "name": "fold2.txt",
+      "sha256": "4f6a096f03100743786183d5d66c0f4ce1499001397aecd64c8145031fa0815f",
+      "bytes": 1064754
+    },
+    {
+      "kind": "v51_edge_risk",
+      "route": 3,
+      "name": "fold3.txt",
+      "sha256": "139b79e418d1252b2b7f17e3186548c0b939e4ff17dfdd2596c021c52a5c186b",
+      "bytes": 1065738
+    },
+    {
+      "kind": "v51_edge_risk",
+      "route": 4,
+      "name": "fold4.txt",
+      "sha256": "7475f7871172f285ac387f3d939d9d3404be89dad53bac391694fb41e0fb5e47",
+      "bytes": 1066037
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# Base config of the matcher. Every model.* field is restored from the checkpoint's hyper_parameters and
+# data.downsample / data.local_contrast are copied from it; loss / test come from EMB_OVERRIDES
+# (infer/common.py restore_cfg and build).
+model:
+  slicer_trainable: false
+data: {}

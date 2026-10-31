@@ -1,0 +1,29 @@
+{
+  "features": [
+    "raw_p",
+    "emit_p",
+    "hist_len5",
+    "fut_len5",
+    "hist_speed",
+    "fut_speed",
+    "link_speed",
+    "link_hist_res",
+    "link_fut_res",
+    "hist_fut_res",
+    "link_hist_cos",
+    "link_fut_cos",
+    "hist_fut_cos",
+    "hist_fut_emb_cos",
+    "hist_fut_emb_l2",
+    "parent_hist_emb_cos",
+    "child_fut_emb_cos",
+    "hist_score_mean",
+    "fut_score_mean",
+    "parent_score",
+    "child_score",
+    "parent_rank",
+    "child_rank",
+    "raw_logit"
+  ],
+  "n_folds": 5
+}

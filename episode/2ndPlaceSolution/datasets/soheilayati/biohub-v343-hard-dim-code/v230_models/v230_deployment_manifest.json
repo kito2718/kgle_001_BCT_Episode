@@ -1,0 +1,9 @@
+{
+  "models": {
+    "tree.txt": "932c2015d68e80f5dc7b480e15706989307b8daf2f0f1af4e2527bf9fa92e7f7",
+    "residual.pt": "cd8889a0b984b489caafe3db52600a7bdb3566becdcf1c79e9d1ac531cc71320"
+  },
+  "fixed_bonus": 0,
+  "full_data_fit": true,
+  "fit_manifest_sha256": "1d3c1ffebc3f15a0ad9aeb136b22b6fe11a32215d27c805c749d505fe2340f56"
+}

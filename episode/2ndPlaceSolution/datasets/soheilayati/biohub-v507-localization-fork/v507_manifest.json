@@ -1,0 +1,15 @@
+{
+  "version": "v507_localization_fork_v1",
+  "module_sha256": "546c0e1710c18164d313ea0ecda6f6c4ee0a4edfdbe1fa4c13778cdafa48d0ff",
+  "metadata_sha256": "b05c572fc1c0fe40cb739e8e4de32fe16609b7d5e282de32ed7b27480f2b247f",
+  "model_sha256": {
+    "localization_axis0.npz": "acc790893907a84e25bbea44aba0d88725094bef9bfbbc76c4e72952ba9e2fe3",
+    "localization_axis1.npz": "b36d66ddb26ff1fdc90346699188bea304c8add66ef259179416fa7d01a25f47",
+    "localization_axis2.npz": "b8dcc32a870b7a33db8136e62f7eefdc057a6f271a373a409febd00a36b3521c",
+    "localization_gate.npz": "f6aad0714cae63d1799d6b5c968d887d577d88c3cc0e89d72c1fcd491fdbde9a",
+    "fork_pruner.npz": "c3b61b66f6ff54543405663349063501d7f3b40d9009512909511517f58d51e5"
+  },
+  "v506_model_sha256_identical": true,
+  "no_sklearn_runtime_dependency": true,
+  "no_neural_forward_pass": true
+}

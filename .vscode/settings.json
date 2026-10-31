@@ -1,0 +1,15 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\jun\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+  "python.pyrefly.typeCheckingMode": "off",
+  "python.pyrefly.disableTypeErrors": true,
+  "python.pyrefly.displayTypeErrors": "never",
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/input/datasets/soheilayati/biohub-v343-hard-dim-code",
+    "./input/datasets/soheilayati/biohub-v343-hard-dim-code"
+  ],
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}/input/datasets/soheilayati/biohub-v343-hard-dim-code",
+    "./input/datasets/soheilayati/biohub-v343-hard-dim-code"
+  ]
+}

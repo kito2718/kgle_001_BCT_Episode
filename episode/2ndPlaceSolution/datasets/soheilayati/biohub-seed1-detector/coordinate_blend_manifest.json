@@ -1,0 +1,60 @@
+{
+  "mechanism": "topology-frozen mutual-nearest detector coordinate blend",
+  "date": "2026-08-14",
+  "parameters": {
+    "gate_um": 3.0,
+    "alpha": 0.5,
+    "guard_hops": 2,
+    "sigma_gate_um": 1.5
+  },
+  "invariants": [
+    "node count unchanged",
+    "edge topology and confidence order unchanged",
+    "forks and their two-hop neighborhoods unchanged",
+    "no ground truth or sample-name policy at inference"
+  ],
+  "validation": {
+    "scope": "four copied-training score samples; seed coordinate view OOF for every sample; v14 base graph remains the deployment-like five-fold ensemble",
+    "metric": "verified adjusted edge Jaccard; division contribution unavailable locally",
+    "control": 0.9281896715055478,
+    "candidate": 0.933838043,
+    "delta": 0.005648371,
+    "control_tp_fp_fn": [2048, 79, 79],
+    "candidate_tp_fp_fn": [2053, 71, 74],
+    "candidate_csv_sha256": "3cd519b349070f00460a802658fc75253f54623d47f9d57b010d34fdd50bdaf7"
+  },
+  "deployment_smoke": {
+    "scope": "same fixed parameters with the full-data seed-1 checkpoint",
+    "candidate": 0.933380902,
+    "delta": 0.005191230,
+    "candidate_tp_fp_fn": [2052, 71, 75],
+    "candidate_csv_sha256": "0648e1ae8da9c78b8145074b2b369a20f61cf68f11835370562fc07ab3302089"
+  },
+  "flow_constraint_v6": {
+    "base": "public v1 gate3 alpha0.5 guard2 sigma1.5",
+    "parameters": {
+      "beta": 0.5,
+      "map_gate_um": 3.0,
+      "residual_gate_um": 2.0,
+      "sigma_gate_um": 1.5,
+      "guard_hops": 2
+    },
+    "oof_v1_delta": 0.000424541,
+    "exact_kaggle_v1_delta": 0.000030046,
+    "exact_tp_fp_fn": [2051, 76, 76],
+    "changed_coordinate_rows": 52784,
+    "candidate_csv_sha256": "122f6fe8cd43ea241d95ff182de8a5b940f92502b2058cc6221a22a7f507360e"
+  },
+  "checkpoints": {
+    "fold0_ep02_sha256": "cde5ee549e44b50d723cabd424368b722d4e6276a573dc9d53e1bea603269286",
+    "fold1_ep02_sha256": "7c0a10c8fc943584a74fc5621ee9b90bd58264ed8ab3d31ec2503ddc26950c1f",
+    "fold3_ep02_sha256": "9a8da45f6250811e0ee76a168a700a9afba3b1739472660fd1f12c384f0e0405",
+    "full_ep02_sha256": "0e5cc6d5eb04e97037db54574aa340d378b978b0e03461eec3c82102850d84f6"
+  },
+  "package": {
+    "checkpoint": "full.seed1.ep02.pt",
+    "postpass": "coordinate_blend.py",
+    "postpass_sha256": "355caccefd8342a2e1633f757e244d4dce67e7d6d86b483bd85f09c39fc41f8c",
+    "notebook_sha256": "9ef4acdb54a24f52083f95b0dd1e9af9e0aa3b94c9317836012ad0dd02e7ad96"
+  }
+}

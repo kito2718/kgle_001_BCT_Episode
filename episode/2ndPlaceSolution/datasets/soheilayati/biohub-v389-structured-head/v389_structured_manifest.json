@@ -1,0 +1,8 @@
+{
+  "version": "v389_structured_correspondence_head",
+  "model": "residual.pt",
+  "model_sha256": "0b9f651f623535faa59df25f90264d5df6f1645bd80a37b233901edd17064eb7",
+  "base_model_sha256": "cd8889a0b984b489caafe3db52600a7bdb3566becdcf1c79e9d1ac531cc71320",
+  "training_report_sha256": "40243646c300450cdbf3252c2360cfad2cd7f319e5ba1857132224233fa05953",
+  "new_inference_forward_passes": 0
+}

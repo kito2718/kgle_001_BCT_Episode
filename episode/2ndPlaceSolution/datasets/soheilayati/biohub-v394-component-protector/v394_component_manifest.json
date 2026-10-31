@@ -1,0 +1,8 @@
+{
+  "version": "v394_balanced_component_protector",
+  "component_model_sha256": "d3098e7aa64cc74f128f51df7a1ac1176259138eee15dfe99cfc0938d8db5842",
+  "acquisition_router_sha256": "e1c95d6234b86fd1ddf0466bf73d7f556b5009ec713f79c9287eac0b4b9c2336",
+  "metadata_sha256": "811710227fe10c9b4a6f1070681139a56142f86faf0f8d7e65daff95baac3b94",
+  "module_sha256": "dda42654bc7ff17532ffa33bd8aecccaad443f973744bec8280dd82973f4b445",
+  "new_forward_passes": 0
+}

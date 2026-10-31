@@ -1,0 +1,11 @@
+{
+  "version": "v343_hard_dim_scaffold",
+  "dim_region_threshold": 0.5,
+  "max_rank_shift": 150,
+  "added_solver_score": -1000000.0,
+  "model_sha256": {
+    "full.dim.txt": "958f0f175b745da9b3048c6090cd68059461046de41975c0c96c94f50ffbffb2",
+    "full.cell.txt": "b0d9ab3fd6dbc433f9904aaff7dfea72252c8b358d49102e81f4c54bfa3ddf16"
+  },
+  "training_receipt_sha256": "b5224ccac69c4ee5ce312c4064603d6dd93951bc74acfcb24fd528e928827c56"
+}
