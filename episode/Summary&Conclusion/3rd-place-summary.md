@@ -136,7 +136,7 @@ flowchart TD
 
 ## パイプラインの詳細解説
 
-### Stage 1. Mainシーケンス(サブプロセス呼び出し)
+### Stage 0. Mainシーケンス(サブプロセス呼び出し)
 
 ```mermaid
 sequenceDiagram
@@ -154,13 +154,15 @@ sequenceDiagram
         Parent->>Worker0: subprocess.Popen("python -m biohub_infer ... --shards 2 --shard 0")<br/>env: CUDA_VISIBLE_DEVICES="0"
         Note over Worker0: args.shard == 0 (not None!)<br/>L90 の if ブロックに入る
         Worker0->>Clip: clip.run(偶数番目の動画 ids[0::2]) (L92)
-        Clip-->>Worker0: キャッシュ保存完了
+        Note over Clip: Stage1～3実行<br/>1:細胞検出　　　　　<br/>2:フロー＆マッチング<br/>3:分裂スコアリング
+        Clip-->>Worker0: キャッシュ保存(ファイル保存)完了
         Worker0-->>Parent: L93 で return してプロセス終了 (exit 0)
     and 2枚目のGPUがある場合
         Parent->>Worker1: subprocess.Popen("python -m biohub_infer ... --shards 2 --shard 1")<br/>env: CUDA_VISIBLE_DEVICES="1"
         Note over Worker1: args.shard == 1 (not None!)<br/>L90 の if ブロックに入る
         Worker1->>Clip: clip.run(奇数番目の動画 ids[1::2]) (L92)
-        Clip-->>Worker1: キャッシュ保存完了
+        Note over Clip: Stage1～3実行<br/>1:細胞検出　　　　　<br/>2:フロー＆マッチング<br/>3:分裂スコアリング
+        Clip-->>Worker1: キャッシュ保存(ファイル保存)完了
         Worker1-->>Parent: L93 で return してプロセス終了 (exit 0)
     end
 
@@ -173,7 +175,7 @@ sequenceDiagram
 
 ### Stage 1. 細胞検出(Cell Detection): 実行時間の55%かけて実行する結果のベースを作成【対応: A0】
 
-トラッキングの成否は「細胞が正しく検出されているか」に完全に依存します。検出漏れはトラッキングの途切れを生み、偽陽性は不正なエッジを誘発するため、作者は検出器のアンサンブルに力点をおいている様です。
+後工程(トラッキングの成否)は「細胞検出」に完全に依存します。検出漏れはトラッキングの途切れを生み、偽陽性は不正なエッジを誘発するため、検出器のアンサンブルに力点をおいている様です。
 
 * **3系統・計15個のモデルアンサンブル**:
   - `dl_284`: 2.5D U-Net(バックボーン: EfficientNetV2-L、重み 0.3)
@@ -192,6 +194,7 @@ sequenceDiagram
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | config.py | `DETECTORS`, `DET_TTA`, `DET_BLUR_SIGMA`, `DET_THRESHOLD`, `NMS_KERNEL` | L9-L17 | 3系統検出器の重み(`0.3, 0.3, 0.4`)、`flip2`、`σ=0.7`、閾値`0.2`、NMS`(3,7,7)`の定義 |
+| infer/clip.py | `run()` | L257-L279 | GPU初期化、`load_models()` による全モデルロード、動画(sid)ループと `infer_clip()` 呼び出し |
 | infer/clip.py | `load_models()` | L174-L189 | 15個のTensorRTエンジン(`dl_284`, `dl_275`, `dl_492` × 5-fold)のロード |
 | infer/clip.py | `infer_clip()` 内の Stage ① 呼び出し | L208-L211 | `common.detect_tta()` を呼び出して各フレームのピーク座標と信頼度を取得 |
 | infer/common.py | `forward_tta()`, `blur3d()`, `detect_tta()` | L75-L139 | TTA推論(L75-L98)、3Dガウシアンブラー(L101-L116)、アンサンブル合算とピーク抽出(L120-L139) |
@@ -202,27 +205,34 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
+    participant Run as infer/clip.py<br/>run() (L257-L279)
     participant Clip as infer/clip.py<br/>infer_clip() (L208-L211)
     participant Common as infer/common.py<br/>detect_tta() (L120-L139)
     participant TRT as trt.py<br/>TrtModel (15 Engines)
     participant Metric as core/metric.py<br/>extract_peaks() (L40-L56)
     participant Link_ as infer/linking.py<br/>link_embed() (L170-L236)
 
-    Clip->>Common: detect_tta(det, store_det, sid, device, cfg_det)
-    loop 各フレーム t = 0 .. T-1 (L125-L138)
-        Common->>Common: to_model_input(frame) (0.1〜99.9%輝度正規化, L127)
-        loop 15モデル (3アーキテクチャ × 5 folds, L129-L133)
-            Common->>TRT: forward_tta(model, x, mode="flip2", amp=True) (L75-L98)
-            TRT-->>Common: 予測ヒートマップ (Orig + XY-Flip平均)
-            Common->>Common: nan_to_num() & 重み付け加算 (weight / 5) (L131-L133)
+    Run->>Run: load_models(weights, device) (L270)
+    Note over Run,TRT: 15個の検出TRTエンジン・Matcher・Flow・Div3FをGPUに事前ロード
+    Run->>Run: CellStore生成 (L272-L273)
+    loop 各動画 sid in ids (L275-L279)
+        Run->>Clip: infer_clip(sid, models, stores, ...) (L276)
+        Clip->>Common: detect_tta(det, store_det, sid, device, cfg_det)
+        loop 各フレーム t = 0 .. T-1 (L125-L138)
+            Common->>Common: to_model_input(frame) (0.1〜99.9%輝度正規化, L127)
+            loop 15モデル (3アーキテクチャ × 5 folds, L129-L133)
+                Common->>TRT: forward_tta(model, x, mode="flip2", amp=True) (L75-L98)
+                TRT-->>Common: 予測ヒートマップ (Orig + XY-Flip平均)
+                Common->>Common: nan_to_num() & 重み付け加算 (weight / 5) (L131-L133)
+            end
+            Common->>Common: blur3d(heatmap, sigma=0.7) (L101-L116, L135)
+            Common->>Metric: extract_peaks(value, th=0.2, kernel=(3,7,7)) (L136)
+            Metric-->>Common: 極大点座標 pk (N, 3)
+            Common->>Common: ピーク位置のヒートマップ値を confidence として保存 (L138)
         end
-        Common->>Common: blur3d(heatmap, sigma=0.7) (L101-L116, L135)
-        Common->>Metric: extract_peaks(value, th=0.2, kernel=(3,7,7)) (L136)
-        Metric-->>Common: 極大点座標 pk (N, 3)
-        Common->>Common: ピーク位置のヒートマップ値を confidence として保存 (L138)
+        Common-->>Clip: peaks (各フレームの3D座標), conf (検出信頼度)
+        Note over Clip,Link_: 【A0 ベースライン評価時】<br/>link_embed(flow=None, lam=0, max_link_um=7.0, drift_iters=2)<br/>ドリフト補正2回 + ハンガリアン法でフレーム間を1対1接続 (Total: 0.890211)
     end
-    Common-->>Clip: peaks (各フレームの3D座標), conf (検出信頼度)
-    Note over Clip,Link_: 【A0 ベースライン評価時】<br/>link_embed(flow=None, lam=0, max_link_um=7.0, drift_iters=2)<br/>ドリフト補正2回 + ハンガリアン法でフレーム間を1対1接続 (Total: 0.890211)
 ```
 
 ---
