@@ -155,14 +155,14 @@ sequenceDiagram
         Note over Worker0: args.shard == 0 (not None!)<br/>L90 の if ブロックに入る
         Worker0->>Clip: clip.run(偶数番目の動画 ids[0::2]) (L92)
         Note over Clip: Stage1～3実行<br/>1:細胞検出　　　　　<br/>2:フロー＆マッチング<br/>3:分裂スコアリング
-        Clip-->>Worker0: キャッシュ保存(ファイル保存)完了
+        Clip-->>Worker0: キャッシュ(ファイル)保存完了
         Worker0-->>Parent: L93 で return してプロセス終了 (exit 0)
     and 2枚目のGPUがある場合
         Parent->>Worker1: subprocess.Popen("python -m biohub_infer ... --shards 2 --shard 1")<br/>env: CUDA_VISIBLE_DEVICES="1"
         Note over Worker1: args.shard == 1 (not None!)<br/>L90 の if ブロックに入る
         Worker1->>Clip: clip.run(奇数番目の動画 ids[1::2]) (L92)
         Note over Clip: Stage1～3実行<br/>1:細胞検出　　　　　<br/>2:フロー＆マッチング<br/>3:分裂スコアリング
-        Clip-->>Worker1: キャッシュ保存(ファイル保存)完了
+        Clip-->>Worker1: キャッシュ(ファイル)保存完了
         Worker1-->>Parent: L93 で return してプロセス終了 (exit 0)
     end
 
@@ -237,7 +237,7 @@ sequenceDiagram
 
 ---
 
-### Stage 2. 3D Dense Flow(空間ベクトル場)と細胞マッチング(Dense Flow & Matching)【対応: A1, A2】
+### Stage 2. 3D Dense Flow(空間ベクトル場)と細胞マッチング(Matching)【対応: A1, A2】
 生物の細胞は組織全体の流動や自律的な移動を伴うため、単純なユークリッド距離だけでは誤った対応付けが起きるのに対応する。
 
 * **3D Dense Flow(空間ベクトル場) (FlowNet3D)**:
