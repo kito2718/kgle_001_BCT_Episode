@@ -210,7 +210,6 @@ sequenceDiagram
     participant Common as infer/common.py<br/>detect_tta() (L120-L139)
     participant TRT as trt.py<br/>TrtModel (15 Engines)
     participant Metric as core/metric.py<br/>extract_peaks() (L40-L56)
-    participant Link_ as infer/linking.py<br/>link_embed() (L170-L236)
 
     Run->>Run: load_models(weights, device) (L270)
     Note over Run,TRT: 15個の検出TRTエンジン・Matcher・Flow・Div3FをGPUに事前ロード
@@ -247,7 +246,7 @@ sequenceDiagram
             end
         end
         Common-->>Clip: peaks (各フレームの3D座標), conf (検出信頼度)
-        Note over Clip,Link_: 【A0 実験時】<br/>link_embed(flow=None, lam=0, max_link_um=7.0, drift_iters=2)を仮実装し、<br/>ドリフト補正2回 + ハンガリアン法でフレーム間を1対1接続して計測 → 結果:(Total: 0.890211)
+        Note over Clip,Metric: 【A0 実験時】<br/>link_embed(flow=None, lam=0, max_link_um=7.0, drift_iters=2)を仮実装し、<br/>ドリフト補正2回 + ハンガリアン法でフレーム間を1対1接続して計測 → 結果:(Total: 0.890211)
     end
 ```
 
