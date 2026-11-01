@@ -193,23 +193,25 @@ sequenceDiagram
 #### Stage 1 細胞検出(Cell Detection)ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
-| config.py | `DETECTORS`, `DET_TTA`, `DET_BLUR_SIGMA`, `DET_THRESHOLD`, `NMS_KERNEL` | L9-L17 | 3系統検出器の重み(`0.3, 0.3, 0.4`)、`flip2`、`σ=0.7`、閾値`0.2`、NMS`(3,7,7)`の定義 |
-| infer/clip.py | `run()` | L257-L279 | GPU初期化、`load_models()` による全モデルロード、動画(sid)ループと `infer_clip()` 呼び出し |
-| infer/clip.py | `load_models()` | L174-L189 | 15個のTensorRTエンジン(`dl_284`, `dl_275`, `dl_492` × 5-fold)のロード |
-| infer/clip.py | `infer_clip()` 内の Stage ① 呼び出し | L208-L211 | `common.detect_tta()` を呼び出して各フレームのピーク座標と信頼度を取得 |
-| infer/common.py | `forward_tta()`, `blur3d()`, `detect_tta()` | L75-L139 | TTA推論(L75-L98)、3Dガウシアンブラー(L101-L116)、アンサンブル合算とピーク抽出(L120-L139) |
-| core/metric.py | `extract_peaks()` | L40-L56 | `F.max_pool3d` による `(3, 7, 7)` NMSピーク抽出 |
-| infer/linking.py | `link_embed()` (`flow=None, lam=0` 時が **A0**) | L170-L236 | ドリフト補正2回反復(`drift_iters=2`)＋ハンガリアン法(`linear_sum_assignment`)による1対1接続 |
+| config.py | `FOLDS`, `DETECTORS`, `DET_THRESHOLD`, `NMS_KERNEL`, `DET_BLUR_SIGMA`, `DET_TTA` | L12-L20 | 5-fold、3系統検出器の重み(`0.3, 0.3, 0.4`)、閾値`0.2`、NMS`(3,7,7)`、`σ=0.7`、TTAの定義 |
+| infer/clip.py | `run()` | L257-L279 | GPU初期化、`load_models()` による全モデルロード、`CellStore` 生成、動画(sid)ループと `infer_clip()` 呼び出し |
+| infer/clip.py | `load_models()` | L174-L189 | 15個のTensorRTエンジン(`dl_284`, `dl_275`, `dl_492` × 5-fold)と重み(`weight / 5`)のロード |
+| core/dataset.py | `CellStore`, `frame()`, `to_model_input()` | L20-L69 | Zarr解凍キャッシュ、ダウンサンプリング、0.1〜99.9%輝度正規化(L52-L69)、3D→4Dテンソル変換(L20-L24) |
+| infer/clip.py | `infer_clip()` 内の Stage ① 呼び出し | L204-L211 | `cfg_det` 生成と `common.detect_tta()` 呼び出しによる各フレームのピーク座標(`peaks`)・信頼度(`conf`)の取得 |
+| infer/common.py | `forward_tta()`, `blur3d()`, `detect_tta()` | L75-L139 | TTA推論(L75-L98)、3Dガウシアンブラー平滑化(L101-L116)、15モデル重み付き合算とピーク抽出ループ(L120-L139) |
+| trt.py | `TrtModel` | L60-L78 | 1入力 `(B,1,Z,Y,X)` → 1出力 `(B,1,Z,Y,X)` の検出用TensorRTエンジン推論ラッパー |
+| core/metric.py | `extract_peaks()` | L8-L13 | `F.max_pool3d` による `(3, 7, 7)` NMS極大点座標 `(N, 3)` の抽出 |
+| infer/linking.py | `link_embed()` (※**A0** 実験評価時のみ) | L170-L236 | 【A0実験用】`flow=None, lam=0` でドリフト補正2回反復＋ハンガリアン法により1対1接続(本番はStage 2で実行) |
 
 #### Stage 1 細胞検出(Cell Detection)シーケンス
 ```mermaid
 sequenceDiagram
     autonumber
     participant Run as infer/clip.py<br/>run() (L257-L279)
-    participant Clip as infer/clip.py<br/>infer_clip() (L208-L211)
+    participant Clip as infer/clip.py<br/>infer_clip() (L204-L211)
     participant Common as infer/common.py<br/>detect_tta() (L120-L139)
     participant TRT as trt.py<br/>TrtModel (15 Engines)
-    participant Metric as core/metric.py<br/>extract_peaks() (L40-L56)
+    participant Metric as core/metric.py<br/>extract_peaks() (L8-L13)
 
     Run->>Run: load_models(weights, device) (L270)
     Note over Run,TRT: 15個の検出TRTエンジン・Matcher・Flow・Div3FをGPUに事前ロード
