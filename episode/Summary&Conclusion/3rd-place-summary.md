@@ -215,23 +215,39 @@ sequenceDiagram
     Run->>Run: load_models(weights, device) (L270)
     Note over Run,TRT: 15個の検出TRTエンジン・Matcher・Flow・Div3FをGPUに事前ロード
     Run->>Run: CellStore生成 (L272-L273)
-    loop 各動画 sid in ids (L275-L279)
+    Note over Run: CellStoreクラス ... 全胚細胞の全フレームを持つ(要は全データ)。<br/>frame(sid, t) ... 指定した動画 sid の t フレームをダウンサンプリング数だけ返却する関数<br/>内部では「キャッシュ読込 → (キャッシュミス時)Zarr解凍 → 平均プーリング(ダウンサンプリング) → 輝度正規化」を一気に実行する<br/>※ダウンサンプリング数とは...(64,256,256)でダウンサンプリング(1,2,2)だと、(64*128*128)数になる。<br/>_raw(raw_cache) ... 生データキャッシュ。毎回zarr解凍は時間がかかるから保持っておく。<br/>ds(downsample)...サンプリング固定値[z,y,x]。<br/>norm ... (float(q["0.001"]), float(q["0.999"])) : (下限分位点, 上限分位点) の tuple<br/>shape ... 形状。(100, 64, 256, 256)固定。
+    Note over Run: stores = [CellStore(...)]には、サンプリングサイズ違い[1, 1, 1],[1, 4, 4],[1, 2, 2]の3つが設定される。
+    loop 動画数Loop sid in ids (L275-L279)
         Run->>Clip: infer_clip(sid, models, stores, ...) (L276)
+        Note over Clip: det ... 細胞検出用モデル 
+        Note over Clip: cfg_det = {<br/>cfg_det.model.det_threshold:0.2 ... ピーク検出の閾値。3Dヒートマップの値が 0.2 未満のボクセルは「細胞ではない(背景)」として切り捨て<br/>cfg_det.model.nms_kernel:[3, 7, 7] ... 3D NMS(非極大値抑制)のカーネルサイズ(Z, Y, X)。周囲 3×7×7 ボクセルの中で局所最大値になっている点だけを「細胞の中心(peaks)」として抽出<br/>cfg_det.test.frames_per_batch:1 ... 1回の推論バッチで処理するフレーム数。フル解像度(64, 256, 256)だと巨大なため、1フレームずつ GPU に入力するように設定}
         Clip->>Common: detect_tta(det, store_det, sid, device, cfg_det)
         loop 各フレーム t = 0 .. T-1 (L125-L138)
-            Common->>Common: to_model_input(frame) (0.1〜99.9%輝度正規化, L127)
-            loop 15モデル (3アーキテクチャ × 5 folds, L129-L133)
-                Common->>TRT: forward_tta(model, x, mode="flip2", amp=True) (L75-L98)
+            Common->>Common: to_model_input(frame:0.1〜99.9%輝度正規化, L127)
+            Note over Common: 3列(Z,Y,X)→4列(1,Z,Y,X)化<br/>torch.stack()で4列→5列(B:1,1,Z,Y,X)化(かつ戻り値)<br/>to(device)でGPU転送
+            loop model:15モデル(3アーキテクチャ × 5 folds), weight:[0.3/5=0.06|0.3/5=0.06|0.4/5=0.08] L129-L133
+                Common->>TRT: value:(1,64,256,256) = forward_tta(model, x, mode="flip2", amp=True)[:, 0](L75-L98)<br/> ... "[:, 0]"は次元削除
+                Note over TRT: forward_tta()の戻り値は(1,1,64,256,256)の3D heatmap。<br/>(各ボクセルが「どれだけ細胞の中心らしいか(0.0〜1.0付近のスコア)」)
+                Note over TRT: "[:, 0]"の説明...ルール1: 後ろの次元を省略すると、自動的にすべて":"になる<br/>　　　　　　ルール2:スライス(:)ではなく「単一の整数(0)」を指定した軸は、次元が消滅する<br/>(実際はデータや値はちゃんと残っていて、<br/>ただ「2番目の次元はもう0しか選べないように固定したから、<br/>これからはインデックスを1つ飛ばして [0][63]... のように<br/>スッキリ書きましょう」という状態になった、<br/>とイメージすると分かりやすい)
                 TRT-->>Common: 予測ヒートマップ (Orig + XY-Flip平均)
                 Common->>Common: nan_to_num() & 重み付け加算 (weight / 5) (L131-L133)
+                Note over Common: nan_to_num()はガード処理(nanと+/-∞を0の置き換えしてるだけ)
+                Note over Common: 重み付け加算はweightにすでに設定されてる(0.06,0.06,0.08)ので掛けるだけでいい。
+                Note over Common: heatmap(shape:(1, 64, 256, 256))を生成している。
             end
-            Common->>Common: blur3d(heatmap, sigma=0.7) (L101-L116, L135)
-            Common->>Metric: extract_peaks(value, th=0.2, kernel=(3,7,7)) (L136)
-            Metric-->>Common: 極大点座標 pk (N, 3)
-            Common->>Common: ピーク位置のヒートマップ値を confidence として保存 (L138)
+            loop heatmap[0]ループ([1,64,256,256]なので1回だけ)
+                Common->>Common: value = blur3d(heatmap, sigma=0.7) (L101-L116, L135)
+                Note over Common: 平滑化実行。<br/>(細胞中心のすぐ隣のボクセルがたまたま 0.001 だけ高くなったり、<br/>細かいトゲのようなノイズが出たりしてるのを平均化する)<br/>valueは(64,256,256)
+                Common->>Metric: pk:(shape[N,3]int32) = extract_peaks(value, th=0.2, kernel=(3,7,7)) (L136)
+                Note over Common: pk: N 個の細胞中心(z, y, x)
+                Metric-->>Common: 極大点座標 pk (N, 3)
+                Note over Common: peaks.append()で頂点リストに追加
+                Common->>Common: ピーク位置のヒートマップ値を confidence として保存 (L138)
+                Note over Common: heatmapは「各ボクセルがどれだけ細胞の中心らしいか<br/>(0.0〜1.0付近のスコア)」なので、自信度とも言える。<br/>confidence(自信度)リストに追加
+            end
         end
         Common-->>Clip: peaks (各フレームの3D座標), conf (検出信頼度)
-        Note over Clip,Link_: 【A0 ベースライン評価時】<br/>link_embed(flow=None, lam=0, max_link_um=7.0, drift_iters=2)<br/>ドリフト補正2回 + ハンガリアン法でフレーム間を1対1接続 (Total: 0.890211)
+        Note over Clip,Link_: 【A0 実験時】<br/>link_embed(flow=None, lam=0, max_link_um=7.0, drift_iters=2)を仮実装し、<br/>ドリフト補正2回 + ハンガリアン法でフレーム間を1対1接続して計測 → 結果:(Total: 0.890211)
     end
 ```
 
@@ -603,7 +619,7 @@ sequenceDiagram
 
 ## 1位・2位・3位解法の比較
 
-| 項目 | 1位解法 (sersasj) | 2位解法 (soheilayati) | 3位解法 (yu4u / ren4yu) |
+| 項目 | 1位解法(sersasj) | 2位解法(soheilayati) | 3位解法(yu4u / ren4yu) |
 | :--- | :--- | :--- | :--- |
 | **基本設計思想** | **ビジュアルトラッキング**<br>細胞の見た目変化・FPN占有マップから直接追跡 | **幾何ヒューリスティクス & 特徴量工学**<br>距離・速度・カルマンフィルタベース | **物理フロー補正 + 数理計画法(LP)**<br>3D Dense Flow + 4段分裂判定 + 整数計画法 |
 | **検出器 (Detector)** | 3D U-Net (MAE事前学習 + 3Dベクトルフロー予測) | 3D U-Net (5-foldアンサンブル + 多段コンセンサス) | **2.5D U-Net (EffNetV2-L, B7) + 3D SegResNet** (実行時間の55%を投入) |
@@ -617,11 +633,11 @@ sequenceDiagram
 ## まとめ
 
 Biohubコンペの3位解法は、
-1. **「検出こそがすべての土台」**として計算時間の過半(55%)を強力なアンサンブル検出器に注ぎ込んだこと
-2. 単純なユークリッド距離ではなく**「3D Dense Flow(空間ベクトル場)による運動補正」**を徹底したこと
-3. 分裂現象を**「parent / pre / post / native」の4視点から専門モデル化**したこと
-4. 局所的な追跡ミスを防ぐため**「整数計画法(LP)による大域的最適化」**で一括解決したこと
-5. 最後に**「オプティカルフローに沿った座標のアフィン微小調整」**で限界まで削り出したこと
+1. **「検出こそがすべての土台」** として計算時間の過半(55%)を強力なアンサンブル検出器に注ぎ込んだこと
+2. 単純なユークリッド距離ではなく **「3D Dense Flow(空間ベクトル場)による運動補正」** を徹底したこと
+3. 分裂現象を **「parent / pre / post / native」の4視点から専門モデル化** したこと
+4. 局所的な追跡ミスを防ぐため **「整数計画法(LP)による大域的最適化」** で一括解決したこと
+5. 最後に **「オプティカルフローに沿った座標のアフィン微小調整」** で限界まで削り出したこと
 
 という、考察とエンジニアリングの結果でした。
 
