@@ -181,7 +181,7 @@ sequenceDiagram
   - `dl_284`: 2.5D U-Net(バックボーン: EfficientNetV2-L、重み 0.3)
   - `dl_275`: 3D SegResNet(MONAI実装、重み 0.3)
   - `dl_492`: 2.5D U-Net(バックボーン: EfficientNet-B7、重み 0.4)
-  - それぞれ5-foldのクロスバリデーションモデルを用意し、オリジナル画像＋XY反転(`flip2` TTA)を掛け合わせた全15モデルの予測ヒートマップを重み付き平均。
+  - それぞれ5-foldのクロスバリデーションモデルを用意し、全15モデルの予測ヒートマップを重み付き平均(※Writeupでは反転TTAと記載されているが、最終提出コードでは12時間制限に収めるため `DET_TTA = 'none'` に設定)。
 * **ピーク検出処理**:
   - 平均ヒートマップに対して3D分離ガウシアンブラー($\sigma = 0.7$)を適用して微小ノイズを除去。
   - カーネルサイズ `(3, 7, 7)` の3D Max PoolingによるNMS(Non-Maximum Suppression)を実施。
@@ -227,10 +227,10 @@ sequenceDiagram
             Common->>Common: to_model_input(frame:0.1〜99.9%輝度正規化, L127)
             Note over Common: 3列(Z,Y,X)→4列(1,Z,Y,X)化<br/>torch.stack()で4列→5列(B:1,1,Z,Y,X)化(かつ戻り値)<br/>to(device)でGPU転送
             loop model:15モデル(3アーキテクチャ × 5 folds), weight:[0.3/5=0.06|0.3/5=0.06|0.4/5=0.08] L129-L133
-                Common->>TRT: value:(1,64,256,256) = forward_tta(model, x, mode="flip2", amp=True)[:, 0](L75-L98)<br/> ... "[:, 0]"は次元削除
-                Note over TRT: forward_tta()の戻り値は(1,1,64,256,256)の3D heatmap。<br/>(各ボクセルが「どれだけ細胞の中心らしいか(0.0〜1.0付近のスコア)」)
+                Common->>TRT: value:(1,64,256,256) = forward_tta(model, x, mode="none", amp=True)[:, 0](L75-L98)<br/> ... "[:, 0]"は次元削除
+                Note over TRT: forward_tta()の戻り値は(1,1,64,256,256)の3D heatmap。<br/>(各ボクセルが「どれだけ細胞の中心らしいか(0.0〜1.0付近のスコア)」)<br/>※Writeupでは反転TTAと記載されているが、実コード(config.py)では12時間制限のためDET_TTA="none"
                 Note over TRT: "[:, 0]"の説明...ルール1: 後ろの次元を省略すると、自動的にすべて":"になる<br/>　　　　　　ルール2:スライス(:)ではなく「単一の整数(0)」を指定した軸は、次元が消滅する<br/>(実際はデータや値はちゃんと残っていて、<br/>ただ「2番目の次元はもう0しか選べないように固定したから、<br/>これからはインデックスを1つ飛ばして [0][63]... のように<br/>スッキリ書きましょう」という状態になった、<br/>とイメージすると分かりやすい)
-                TRT-->>Common: 予測ヒートマップ (Orig + XY-Flip平均)
+                TRT-->>Common: 予測ヒートマップ(1,1,64,256,256) → [:, 0]で(1,64,256,256)
                 Common->>Common: nan_to_num() & 重み付け加算 (weight / 5) (L131-L133)
                 Note over Common: nan_to_num()はガード処理(nanと+/-∞を0の置き換えしてるだけ)
                 Note over Common: 重み付け加算はweightにすでに設定されてる(0.06,0.06,0.08)ので掛けるだけでいい。
