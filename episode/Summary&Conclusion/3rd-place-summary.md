@@ -293,6 +293,8 @@ sequenceDiagram
     participant R2 as infer/second_round.py<br/>second_round() (L61-L108)
     participant Wire as infer/lp_wiring.py<br/>lp_wiring() & top_candidates()
 
+    Note over Clip,Emb: emb.models ... EmbedUnetモデル5つ(dl_401_fold0_last.ckpt-dl_401_fold4_last.ckpt)<br/>store_emb ... 生データ → Y, Xを1/4に平均プーリング[1, 4, 4] → 正規化した(64, 64, 64)のデータ<br/>peaks ... Stage1の出力(shape:(N,3 int32)のフレーム毎細胞中心座標)
+    Note over Clip,Emb: Embedの名前の由来はheatmap(自信度)を出力する 2.5D U-Netを、<br/>"個別細胞識別の特徴量(64次元)"を出力する(AI・機械学習の分野では埋込みという)様に変更したため。<br/>「細胞の特徴を64次元ベクトルに埋め込む(Embed)ためのU-Net」だから EmbedUnetと命名している。
     Clip->>Emb: detect_sample_embed(emb.models, store_emb, peaks) (L26-L54)
     Emb-->>Clip: per_t: 各フレームの (座標 pk_np, 5-fold連結特徴量)
     Clip->>Flow: flow_with_dense(array, quantiles, peaks, flow_model) (L217)
