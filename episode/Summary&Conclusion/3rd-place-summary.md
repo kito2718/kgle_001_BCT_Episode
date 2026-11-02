@@ -287,16 +287,41 @@ stage1では、peaks:(N,3 int32)フレーム毎細胞中心座標, confidence:(N
 sequenceDiagram
     autonumber
     participant Clip as infer/clip.py<br/>infer_clip() (L213-L230)
+    participant DSE as infer/clip.py<br/>detect_sample_embed() (L26-L54)
+    participant Emb as core/unet/embed_unet.py<br/>EmbedUnet (5-fold)
+    participant Sample as core/embedding.py<br/>sample_embeddings() (L6-L21)
     participant Flow as infer/div797_parent.py<br/>flow_with_dense() (L12-L25)
-    participant Emb as core/model.py & matcher.py<br/>EmbedUnet (5-fold)
     participant Link_ as infer/linking.py<br/>build_matcher_scores() & link_embed()
     participant R2 as infer/second_round.py<br/>second_round() (L61-L108)
     participant Wire as infer/lp_wiring.py<br/>lp_wiring() & top_candidates()
 
-    Note over Clip,Emb: emb.models ... EmbedUnetモデル5つ(dl_401_fold0_last.ckpt-dl_401_fold4_last.ckpt)<br/>store_emb ... 生データ → Y, Xを1/4に平均プーリング[1, 4, 4] → 正規化した(64, 64, 64)のデータ<br/>peaks ... Stage1の出力(shape:(N,3 int32)のフレーム毎細胞中心座標)
+    Note over Clip,Emb: emb.models ... EmbedUnetモデル5つ(dl_401_fold0_last.ckpt-dl_401_fold4_last.ckpt)<br/>store_emb ... 生データ → Y, Xを1/4に平均プーリング[1, 4, 4] → 正規化した(64, 64, 64)のデータ<br/>peaks ... Stage1の出力(shape:(N,3 int32)のフレーム毎細胞中心座標)<br/>cfg_emb ... data.downsample:[1,4,4], loss.embed_radius_um:12.0, test.frames_per_batch:4, test.amp:True 等
     Note over Clip,Emb: Embedの名前の由来はheatmap(自信度)を出力する 2.5D U-Netを、<br/>"個別細胞識別の特徴量(64次元)"を出力する(AI・機械学習の分野では埋込みという)様に変更したため。<br/>「細胞の特徴を64次元ベクトルに埋め込む(Embed)ためのU-Net」だから EmbedUnetと命名している。
-    Clip->>Emb: detect_sample_embed(emb.models, store_emb, peaks) (L26-L54)
-    Emb-->>Clip: per_t: 各フレームの (座標 pk_np, 5-fold連結特徴量)
+    Clip->>DSE: detect_sample_embed(emb.models, store_emb, sid, cfg_emb, device, peaks) (L214)
+    Note over DSE: ds = [1, 4, 4] (downsample倍率)<br/>T = 100 (総フレーム数), bs = 4 (バッチサイズ:1度に処理するフレーム数)
+    loop 4フレームずつバッチ処理 t0 in range(0, T=100, bs=4) (L39-L53)
+        DSE->>DSE: frames = [store_emb.frame(sid, t) for t in range(t0, min(T, t0+4))] (L40)
+        Note over DSE: store_embから4フレーム分の3D画像(64,64,64)×4枚を取得
+        DSE->>DSE: xt = torch.from_numpy(np.stack(frames))[:, None].to(device) (L41)
+        Note over DSE: 1. np.stack(frames) ... (64,64,64)×4枚のリストを束ねて4次元配列(4,64,64,64)化<br/>2. torch.from_numpy(...) ... NumPy配列をPyTorchテンソルへ変換<br/>3. [:, None] ... Stage1の[:, 0](次元削除)の逆で、2番目にサイズ1のチャンネル軸を挿入し<br/>   4次元(B:4,Z:64,Y:64,X:64) → 5次元(B:4,C:1,Z:64,Y:64,X:64)化<br/>4. .to(device) ... GPUへ転送
+        loop model in emb.models (5-foldのEmbedUnetモデル, L43-L46)
+            DSE->>Emb: _, emb = model(xt) (FP16 autocast, L45)
+            Note over Emb: 2.5D Encoder + 3D Decoderの途中層(embed_tap=-2)まで計算し、<br/>64chの3D特徴マップ emb (B:4, C:64, Z':32, Y':32, X':32) を出力
+            Emb-->>DSE: emb (4, 64, 32, 32, 32) → embsリストに5モデル分追加
+        end
+        loop バッチ内の各フレーム b = 0 .. 3 (フレーム時刻 t = t0 + b, L47-L53)
+            DSE->>DSE: pk_np = det_peaks[t0 + b] (元解像度(64,256,256)上の細胞座標 (N,3)) (L48)
+            DSE->>DSE: pos_np = to_ds(pk_np, ds=[1,4,4]) (縮小グリッド(64,64,64)上の座標へ変換) (L49)
+            loop 各Foldの特徴マップ emb in embs (5モデル分, L51-L52)
+                DSE->>Sample: sample_embeddings(emb[b], pos, crop_shape=(64,64,64)) (L51)
+                Note over Sample: F.grid_sample(トリリニア補間)で、3D特徴マップ(64,32,32,32)から<br/>N個の細胞座標posの位置にある64次元ベクトル(N, 64)を抜き出す
+                Sample-->>DSE: 1モデル分の細胞特徴量 (N, 64)
+            end
+            DSE->>DSE: np.concatenate(ev, axis=1) で5モデル分の(N,64)を横連結 → (N, 320) (L53)
+            Note over DSE: out.append((pk_np, 連結特徴量(N, 320)))<br/>return out
+        end
+    end
+    DSE-->>Clip: per_t: 全100フレームの (座標 pk_np (N,3), 5-fold連結特徴量 (N,320)) リスト
     Clip->>Flow: flow_with_dense(array, quantiles, peaks, flow_model) (L217)
     Flow-->>Clip: offsets (各検出点のµm変位ベクトル), dense (3D密フロー場)
     Note over Clip,Link_: 【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
