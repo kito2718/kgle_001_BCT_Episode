@@ -136,7 +136,7 @@ flowchart TD
 
 ## パイプラインの詳細解説
 
-### Stage 0. Mainシーケンス(サブプロセス呼び出し)
+### Stage0. Mainシーケンス(サブプロセス呼び出し)
 
 ```mermaid
 sequenceDiagram
@@ -323,7 +323,7 @@ sequenceDiagram
             Note over DSE: out.append((pk_np, 連結特徴量(N, 320)))<br/>return out
         end
     end
-    DSE-->>Clip: per_t: 全100フレームの (座標 pk_np (N,3), 5-fold連結特徴量 (N,320)) リスト
+    DSE-->>Clip: per_t: 全100フレームの(座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト
     end
 
     rect rgb(235, 250, 240)
@@ -341,27 +341,44 @@ sequenceDiagram
         Flow->>Flow: dense.append(result['flow'][0].float16)；prev = nxt (L24)
         Note over Flow: ② dense(Stage3分裂ワープ用)の作成:<br/>全ボクセルの移動ベクトル場(3, 64, 64, 64)をそのままfloat16で保持。さらに次のループのprevに再利用
     end
-    Flow-->>Clip: offsets(細胞移動用(N,3)[µm]),長さは99(100フレーむ-1), dense(全境界・全ボクセルの移動ベクトル場(99, 3, 64, 64, 64))
+    Flow-->>Clip: offsets(細胞移動量(N,3)[µm]),長さは99(100フレーむ-1), dense(全境界・全ボクセルの移動ベクトル場(99, 3, 64, 64, 64))
+    Note over Clip,Flow:【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
     end
 
     rect rgb(255, 245, 235)
     Note over Clip,Wire:【区分3: 細胞マッチング・候補グラフ生成】
-    Note over Clip,Link_:【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
+    Note over Clip,Link_: 隣り合うフレーム t と t+1 (計99箇所の境界) ごとに、時刻 t の全細胞(𝑁𝑎個)と時刻 t+1 の全細胞(𝑁𝑏個)を総当たりで見比べて、『どの細胞とどの細胞が同じ細胞か』の相性スコア表(ロジット)を作る<br/>per_t...全100フレームの(細胞中心座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト<br/>emb...5-foldのEmbedUnetを束ねたmodels。後半ヘッドの emb.matcher(NodeMatcher 5個：特徴量同士を比較して相性スコアを出すネットワーク)を使用<br/>cfg_emb...EmbedUnetの設定なんだけど、使うのはcfg_emb.loss.embed_radius_um(12.0 µm: マッチング候補を探す半径)だけ<br/>offsets...時刻tの各細胞の移動ベクトル(N, 3)[µm]
     Clip->>Link_: build_matcher_scores(per_t, emb, cfg_emb, offsets) (L16-L55)
-    Link_->>Emb: model.matcher(fa, ga, fb, gb, radius=12.0µm, offset) (L48-L50)
-    Emb-->>Link_: ペアロジット logits & 消失/出現ロジット null_a, null_b
-    Link_-->>Clip: scores (フレーム境界ごとのロジット辞書)
-    Clip->>Link_: matcher_bidir_probs / rev_probs / sym_probs(scores) (L58-L118)
+    Note over Link_,Emb: 『時刻 t と t+1 のどの細胞が同じ細胞か』のスコア付けと、消失/出現細胞のスコア付けを実行<br/>fa.float()...shape:(Na,320),時刻 t の各細胞の 5-fold連結特徴量 (64次元 × 5モデル=320次元)<br/>ga...shape:(Na, 3),時刻 t の各細胞の3次元物理座標(z,y,x:peaks[t] × SCALE)<br/>fb.float()...shape:(Na,320),時刻t+1の各細胞の 5-fold連結特徴量 (64次元 × 5モデル=320次元)<br/>gb...shape:(Na, 3),時刻t+1の各細胞の3次元物理座標(z,y,x:peaks[t] × SCALE)<br/>offset...FlowNet3Dが予測した、時刻 t の各細胞の移動ベクトル(offsets[t])
+    Link_->>Emb: EnsembleEmb::matcher(fa, ga, fb, gb, radius=12.0µm, offset) (L48-L50)
+    Note over Link_,Link_: ステップ①＆②：特徴量を5等分(320次元=64×5)し、5個のNodeMatcher(m())にそれぞれ採点させる<br/>outs = [m(a, ga, b, gb, radius, andidate_offset_a=candidate_offset_a) for m, a, b in zip(<br/>self.matchers, torch.chunk(fa, n, dim=1), torch.chunk(fb, n, dim=1))]
+    Note over Link_,Link_: ステップ③：5モデル分の採点結果(logits, null_a, null_b)をそれぞれ平均して返す<br/>    return tuple(torch.stack([o[i] for o in outs]).mean(0) for i in range(3))
+    Emb-->>Link_: scores:全99境界分のリスト[<br/>logits:(Na, Nb),相性スコア<br/>null_a:(Na,),消失スコア<br/>null_b:(Nb,),出現スコア ]
+    Link_-->>Clip: return scores:全99境界分のリスト[logits:(Na, Nb),相性スコア, null_a:(Na,),消失スコア, null_b:(Nb,),出現スコア ]
+    Clip->>Link_: ※下記参照<br/>matcher_bidir_probs(scores)...双方向確率取得<br/>rev_probs(scores)...逆方向確率取得<br/>sym_probs(scores)...対象確率取得<br/>(L58-L118)
     Link_-->>Clip: sims(双方向確率), revs(逆方向確率), syms(対称確率)
     Clip->>Link_: link_embed(per_t, max_link=5.5, lam=12.0, sims, flow=offsets) (L170-L236)
     Link_-->>Clip: initial (初期ハンガリアン接続エッジ)
-    Note over Clip,Link_: 【A2 検証ポイント】<br/>Matcher候補フィルタリング + コスト d + 12(1-p) でハンガリアン割当 (Total: 0.901953)
+    Note over Clip,Wire: 【A2 検証ポイント】<br/>Matcher候補フィルタリング + コスト d + 12(1-p) でハンガリアン割当 (Total: 0.901953)
     Clip->>R2: second_round(per_t, initial, emb, offsets, k=5) (L61-L108, L223)
     R2-->>Clip: r2i, r2p (局所アフィン補正後の第2ラウンドTop-5候補と確率)
     Clip->>Wire: lp_wiring() & top_candidates() (L226-L228)
     Wire-->>Clip: nodes, edges, Top-5候補特徴量 (ci, cp, cr, cs, cd)
     end
 ```
+
+<br/>  
+※
+
+**sims(双方向確率), revs(逆方向確率), syms(対称確率)の詳細説明**
+
+`build_matcher_scores()` が出した生の点数(`scores`: `logits`, `null_a`, `null_b`)から、**用途に合わせて以下の3種類の確率表 `(Na, Nb)`** を生成する(L58-L118)。
+
+| 変数名 | 設定関数 | 確率の種類 | 計算式・処理内容 | 説明(主な使い道) |
+| :--- | :--- | :--- | :--- | :--- |
+| **`sims`** | `matcher_bidir_probs(scores)` | **双方向確率**<br>(Bidirectional) | 行方向Softmax($t \to t+1$ の確率 `p_ab`)と列方向Softmax($t+1 \to t$ の確率 `p_ba`)の平均<br>`(p_ab + p_ba) / 2` | **通常の1対1移動用(メイン確率)**。<br>移動元($t$)と移動先($t+1$)の双方が「お互いを第1候補に選んでいる」ペアだけが高確率になる。直後の初期ハンガリアン法(`link_embed`)やStage4の特徴量で使用。 |
+| **`revs`** | `matcher_rev_probs(scores)` | **逆方向確率**<br>(Reverse) | 列方向Softmax($t+1 \to t$ の確率 `p_ba`)のみ<br>＝「子($t+1$)から見て、どの親($t$)から来たか」の確率 | **細胞分裂の救済用**。<br>1つの親が2つの娘に分裂すると、順方向($t \to t+1$)の確率は2つの娘に半分ずつ割れて下がってしまうが、逆方向(娘$\to$親)で見れば「各娘にとっての親は1つだけ」なので確率が割れない。Stage4の較正特徴量で使用。 |
+| **`syms`** | `matcher_sym_probs(scores)` | **対称確率**<br>(Symmetric) | $\text{sigmoid}\left(\frac{2\cdot\text{logits} - \text{null\_a} - \text{null\_b}}{2}\right)$<br>※Softmaxを使わず、シグモイド関数で `0.0〜1.0` に変換 | **周囲のライバル数に依存しない絶対評価用**。<br>`sims` や `revs` は周囲の候補と合計100%を奪い合う(Softmax)ため密集地帯で確率が下がるが、`syms` は「ペアの点数が消滅(`null_a`)・出現(`null_b`)の平均を上回るか」だけを1対1で評価する。初期LP配線(`lp_wiring`)やStage4の特徴量で使用。 |
 
 ---
 
