@@ -335,7 +335,7 @@ sequenceDiagram
         Flow->>Flow: dense.append(result['flow'][0].float16)；prev = nxt (L24)
         Note over Flow: ② dense(Stage3 分裂ワープ用)の作成:<br/>全ボクセルの移動ベクトル場(3, 64, 64, 64)をそのままfloat16で保持。さらに次のループのprevに再利用
     end
-    Flow-->>Clip: offsets (長さ99のリスト: 各境界の細胞変位 (N,3) [µm]), dense (全境界・全ボクセルの3D密フロー場 (99, 3, 64, 64, 64))
+    Flow-->>Clip: offsets(細胞移動用(N,3)[µm]),長さは99(100フレーむ-1), dense(全境界・全ボクセルの移動ベクトル場(99, 3, 64, 64, 64))
     Note over Clip,Link_: 【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
     Clip->>Link_: build_matcher_scores(per_t, emb, cfg_emb, offsets) (L16-L55)
     Link_->>Emb: model.matcher(fa, ga, fb, gb, radius=12.0µm, offset) (L48-L50)
