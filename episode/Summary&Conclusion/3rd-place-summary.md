@@ -18,7 +18,7 @@ Private LB 1353位/3800人と大変悔しい結果に終わりましたが、Kag
 ※この方、日本の方なんですね。。。Kaggle Grandmasterだって。すごいや。
 
 ## biohub 3位の解法まとめ
-3位の解法は、全6Stageで構成されてて、そのうちStage1.細胞検出が一番重要視してるみたいで、3モデルx5Foldモデルのアンサンブルを実装してます。処理時間的にも55%をこのStageが占めるとのこと。
+3位の解法は、全6Stageで構成されてて、そのうちStage1.細胞検出を一番重要視してるみたいで、3モデルx5Foldモデルのアンサンブルを実装してます。処理時間的にも55%をこのStageが占めるとのこと。
 
 - 解説のURL (Writeup)
 https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/3rd-place-solution
@@ -94,13 +94,13 @@ https://www.kaggle.com/code/ren4yu/biohub-inference-run
 
 ```mermaid
 flowchart TD
-    subgraph Stage1["Stage 1: 細胞検出 (GPU) [対応: A0]"]
+    subgraph Stage1["Stage1: 細胞検出 (GPU) [対応: A0]"]
         Raw["3D画像ボリューム (64x256x256)"] --> Det["アンサンブル検出器 (15モデル: 2.5D UNet + 3D SegResNet)"]
         Det --> Blur["Gaussian Blur (σ=0.7) & NMS (3,7,7)"]
         Blur --> Peaks["細胞中心座標 (Nodes)<br/>※A0: 物理距離7µm + ドリフト補正Hungarian法で評価"]
     end
 
-    subgraph Stage2["Stage 2: 運動推定とマッチング (GPU) [対応: A1, A2]"]
+    subgraph Stage2["Stage2: 運動推定とマッチング (GPU) [対応: A1, A2]"]
         Raw --> Flow["3D Dense Flow (FlowNet3D) [A1]"]
         Peaks --> Matcher["2.5D EmbedUnet (5-fold) [A2]"]
         Flow --> Warp["運動変位補正 (A1: +0.0117)"]
@@ -108,22 +108,22 @@ flowchart TD
         Warp --> LinkCand
     end
 
-    subgraph Stage3["Stage 3: 分裂スコアリング (GPU) [対応: A3前半]"]
+    subgraph Stage3["Stage3: 分裂スコアリング (GPU) [対応: A3前半]"]
         Raw & Flow & Peaks --> Div["4系統のdiv3fモデル (parent / pre / post / native)"]
         Div --> DivScore["分裂スコア & 半径16µm 追加候補グラフ"]
     end
 
-    subgraph Stage4["Stage 4: 候補確率の較正 (CPU) [対応: A3中盤]"]
+    subgraph Stage4["Stage4: 候補確率の較正 (CPU) [対応: A3中盤]"]
         LinkCand & DivScore --> Calib["ロジスティック回帰 & GBDT較正器 (LightGBM / XGBoost)"]
         Calib --> Prob["評価対象確率(a) × 条件付き正解確率(q)"]
     end
 
-    subgraph Stage5["Stage 5: 系譜グラフ最適化 (CPU) [対応: A3後半]"]
+    subgraph Stage5["Stage5: 系譜グラフ最適化 (CPU) [対応: A3後半]"]
         Prob --> LP["整数計画法 (Lineage LP/MILP: 最大3ラウンド) [A3: +0.0625]"]
         LP --> OptGraph["矛盾のない大域的系譜ネットワーク"]
     end
 
-    subgraph Stage6["Stage 6: 後処理 (CPU) [対応: A4, A5, A6, A7]"]
+    subgraph Stage6["Stage6: 後処理 (CPU) [対応: A4, A5, A6, A7]"]
         OptGraph --> Gap["A4: Gap Closing (最大3フレーム補完, +0.0051)"]
         Gap --> Filter["A5: 6ノード未満の短トラック除去 (+0.0017)"]
         Filter --> AffineDet["A6: 検出ノードのアフィン座標微小調整 (+0.0059)"]
@@ -145,7 +145,7 @@ sequenceDiagram
     participant Parent as biohub_infer/__main__.py<br/>[親](args.shard = None)
     participant Worker0 as biohub_infer/__main__.py<br/>[子0](--shard 0, GPU 0)
     participant Worker1 as biohub_infer/__main__.py<br/>[子1](--shard 1, GPU 1)
-    participant Clip as biohub_infer/infer/clip.py<br/>run() (Stage 1〜3: 検出・3D Dense Flow(空間ベクトル場)・分裂)
+    participant Clip as biohub_infer/infer/clip.py<br/>run() (Stage1〜3: 検出・3D Dense Flow(空間ベクトル場)・分裂)
 
     Runner->>Parent: subprocess.run("python -m biohub_infer ...") ※--shard なし
     Note over Parent: args.shard is None<br/>preflight() で重みMD5チェック (L96)<br/>run_workers() を実行 (L102)
@@ -166,14 +166,14 @@ sequenceDiagram
         Worker1-->>Parent: L93 で return してプロセス終了 (exit 0)
     end
 
-    Note over Parent: 全子プロセスの終了を proc.wait() で待機 (L65)<br/>続いて L115 の build_submission() (Stage 4〜6: CPU処理) へ進む
+    Note over Parent: 全子プロセスの終了を proc.wait() で待機 (L65)<br/>続いて L115 の build_submission() (Stage4〜6: CPU処理) へ進む
     Parent-->>Runner: submission.csv 出力完了 & プロセス終了
 ```
 
 ---
 
 
-### Stage 1. 細胞検出(Cell Detection): 実行時間の55%かけて実行する結果のベースを作成【対応: A0】
+### Stage1. 細胞検出(Cell Detection): 実行時間の55%かけて実行する結果のベースを作成【対応: A0】
 
 後工程(トラッキングの成否)は「細胞検出」に完全に依存します。検出漏れはトラッキングの途切れを生み、偽陽性は不正なエッジを誘発するため、検出器のアンサンブルに力点をおいている様です。
 
@@ -188,9 +188,9 @@ sequenceDiagram
   - 閾値 `0.2` 以上の極大点を細胞中心ノードとして抽出。
 * **`A0` (Detection with geometric linking) との関係**:
   - **スコア**: Adjusted Edge Jaccard `0.890211` / Division Jaccard `0.000000` / **Total `0.890211`**
-  - 細胞検出だけではエッジ(時間方向の接続)が存在せずスコアが0になるため、Stage 1の検出性能を測るベースラインとして **「物理距離ゲート7 µm以内の1対1ハンガリアン法＋中央値変位による集団ドリフト補正(2回反復)」** でフレーム間を接続したものが **A0** です。フローやMatcher、分裂予測を一切使わない純粋な検出＋幾何リンクのみで `0.8902` という土台を生成。
+  - 細胞検出だけではエッジ(時間方向の接続)が存在せずスコアが0になるため、Stage1の検出性能を測るベースラインとして **「物理距離ゲート7 µm以内の1対1ハンガリアン法＋中央値変位による集団ドリフト補正(2回反復)」** でフレーム間を接続したものが **A0** です。フローやMatcher、分裂予測を一切使わない純粋な検出＋幾何リンクのみで `0.8902` という土台を生成。
 
-#### Stage 1 細胞検出(Cell Detection)ソースコード一覧
+#### Stage1.細胞検出(Cell Detection)ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | config.py | `FOLDS`, `DETECTORS`, `DET_THRESHOLD`, `NMS_KERNEL`, `DET_BLUR_SIGMA`, `DET_TTA` | L12-L20 | 5-fold、3系統検出器の重み(`0.3, 0.3, 0.4`)、閾値`0.2`、NMS`(3,7,7)`、`σ=0.7`、TTAの定義 |
@@ -201,9 +201,9 @@ sequenceDiagram
 | infer/common.py | `forward_tta()`, `blur3d()`, `detect_tta()` | L75-L139 | TTA推論(L75-L98)、3Dガウシアンブラー平滑化(L101-L116)、15モデル重み付き合算とピーク抽出ループ(L120-L139) |
 | trt.py | `TrtModel` | L60-L78 | 1入力 `(B,1,Z,Y,X)` → 1出力 `(B,1,Z,Y,X)` の検出用TensorRTエンジン推論ラッパー |
 | core/metric.py | `extract_peaks()` | L8-L13 | `F.max_pool3d` による `(3, 7, 7)` NMS極大点座標 `(N, 3)` の抽出 |
-| infer/linking.py | `link_embed()` (※**A0** 実験評価時のみ) | L170-L236 | 【A0実験用】`flow=None, lam=0` でドリフト補正2回反復＋ハンガリアン法により1対1接続(本番はStage 2で実行) |
+| infer/linking.py | `link_embed()` (※**A0** 実験評価時のみ) | L170-L236 | 【A0実験用】`flow=None, lam=0` でドリフト補正2回反復＋ハンガリアン法により1対1接続(本番はStage2で実行) |
 
-#### Stage 1 細胞検出(Cell Detection)シーケンス
+#### Stage1.細胞検出(Cell Detection)シーケンス
 ```mermaid
 sequenceDiagram
     autonumber
@@ -256,7 +256,7 @@ stage1では、peaks:(N,3 int32)フレーム毎細胞中心座標, confidence:(N
 
 ---
 
-### Stage 2. 3D Dense Flow(空間ベクトル場)と細胞マッチング(Matching)【対応: A1, A2】
+### Stage2. 3D Dense Flow(空間ベクトル場)と細胞マッチング(Matching)【対応: A1, A2】
 生物の細胞は組織全体の流動や自律的な移動を伴うため、単純なユークリッド距離だけでは誤った対応付けが起きるのでそれへの対応。
 
 * **3D Dense Flow(空間ベクトル場) (FlowNet3D)**:
@@ -270,11 +270,11 @@ stage1では、peaks:(N,3 int32)フレーム毎細胞中心座標, confidence:(N
   - 初期割り当てとしてのHungarian法、および近傍半径12 µm以内のTop-5候補エッジを構築。
 生物の細胞は組織全体の流動や自律的な移動を伴うため、単純なユークリッド距離だけでは誤った対応付けになる。そのためStage2では「画像全体の3Dオプティカルフロー推定(**A1**)」と「細胞単位の外見・位置アテンションによるマッチング(**A2**)」の2段階アプローチで対応候補の絞り込みを実施。
 
-#### Stage 2 関連ソースコードと行数
+#### Stage2 関連ソースコードと行数
 | ファイルパス | 関数・クラス | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | infer/clip.py | `detect_sample_embed()`, `EnsembleMatcher`, `EnsembleEmb` | L26-L75 | 5-foldのEmbedUnetから各検出位置の特徴量をサンプリングして連結(L26-L54)、5-foldのMatcherロジットを平均(L57-L68) |
-| infer/clip.py | `infer_clip()` 内の Stage ② 呼び出し | L213-L230 | 特徴量抽出 → 3D Dense Flow(空間ベクトル場)推定 → Matcherスコア算出 → 第2ラウンド推論 → LP初期配線とTop-5候補抽出 |
+| infer/clip.py | `infer_clip()` 内の Stage② 呼び出し | L213-L230 | 特徴量抽出 → 3D Dense Flow(空間ベクトル場)推定 → Matcherスコア算出 → 第2ラウンド推論 → LP初期配線とTop-5候補抽出 |
 | infer/div797_parent.py | `flow_with_dense()` | L12-L25 | FlowNet3Dで連続フレーム間の変位場を推論し、各検出点の物理変位(`offsets`)と密な3Dフロー場(`dense`)を出力 |
 | ssl_flow/inference.py | `point_priors()` | L84-L120 | 3Dフロー場から各細胞座標のサブボクセル変位ベクトルをトリリニア補間で取得 |
 | infer/linking.py | `build_matcher_scores()`, `matcher_bidir_probs()`, `matcher_rev_probs()`, `matcher_sym_probs()` | L16-L118 | フロー変位補正付きでMatcherロジットを算出(L16-L55)し、双方向・逆方向(娘→親)・対称の3種の確率行列へ変換(L58-L118) |
@@ -282,7 +282,7 @@ stage1では、peaks:(N,3 int32)フレーム毎細胞中心座標, confidence:(N
 | infer/second_round.py | `second_round()` | L61-L108 | 初期リンクから推定した局所アフィン運動場で再度Matcherを実行し、第2ラウンドのTop-5候補(`r2i, r2p`)を取得 |
 | infer/lp_wiring.py | `top_candidates()`, `lp_wiring()` | L42-L69, L125-L141 | 各ノードの上位5候補(`cand_idx`, `cand_prob`, `cand_rev`, `cand_sym`, `cand_dist`)と初期LP配線エッジを抽出 |
 
-#### Stage2 3D Dense Flow(空間ベクトル場)と細胞マッチング(Matching) シーケンス
+#### Stage2.3D Dense Flow(空間ベクトル場)と細胞マッチング(Matching) シーケンス
 ```mermaid
 sequenceDiagram
     autonumber
@@ -295,6 +295,8 @@ sequenceDiagram
     participant R2 as infer/second_round.py<br/>second_round() (L61-L108)
     participant Wire as infer/lp_wiring.py<br/>lp_wiring() & top_candidates()
 
+    rect rgb(235, 245, 255)
+    Note over Clip,Wire: 【区分1: 64次元特徴量(Embedding)生成】
     Note over Clip,Emb: emb.models ... EmbedUnetモデル5つ(dl_401_fold0_last.ckpt-dl_401_fold4_last.ckpt)<br/>store_emb ... 生データ → Y, Xを1/4に平均プーリング[1, 4, 4] → 正規化した(64, 64, 64)のデータ<br/>peaks ... Stage1の出力(shape:(N,3 int32)のフレーム毎細胞中心座標)<br/>cfg_emb ... data.downsample:[1,4,4], loss.embed_radius_um:12.0, test.frames_per_batch:4, test.amp:True 等
     Note over Clip,Emb: Embedの名前の由来はheatmap(自信度)を出力する 2.5D U-Netを、<br/>"個別細胞識別の特徴量(64次元)"を出力する(AI・機械学習の分野では埋込みという)様に変更したため。<br/>「細胞の特徴を64次元ベクトルに埋め込む(Embed)ためのU-Net」だから EmbedUnetと命名している。
     Clip->>DSE: detect_sample_embed(emb.models, store_emb, sid, cfg_emb, device, peaks) (L214)
@@ -322,6 +324,10 @@ sequenceDiagram
         end
     end
     DSE-->>Clip: per_t: 全100フレームの (座標 pk_np (N,3), 5-fold連結特徴量 (N,320)) リスト
+    end
+
+    rect rgb(235, 250, 240)
+    Note over Clip, Wire: 【区分2: 移動ベクトル・3D Dense Flow生成】
     Note over Clip, Flow: FlowNet3D推論で下記2つを同時に作って返す<br/>「① 各細胞の座標における移動ベクトル(offsets)」<br/>「② 空間全体の全ボクセルの移動ベクトル場(dense)」<br/>array...(100, 64, 256, 256)全100フレーム分の4次元配列生データ(CachedZarrArrayでraw_cacheを共有)<br/>quantiles...zarrに準備してくれてる四分位数(0.001, 0.999)<br/>peaks...Stage1で取得した細胞中心座標s<br/>flow_model...3D Dense Flow(空間ベクトル場)推定用モデル(ssl_flow_flow_164_ep48.pt)を使用する。
     Clip->>Flow: flow_with_dense(array, quantiles, peaks, flow, downsample=[1,4,4], device) (L217-L218)
     Flow->>Flow: prev = prepare_zarr_frame(array, t=0, quantiles, downsample=[1,4,4]) (L15)
@@ -333,10 +339,14 @@ sequenceDiagram
         Flow->>Flow: point_priors(result, points=peaks[t], downsample=[1,4,4])['flow_zyx'] * SCALE (L21-L23)
         Note over Flow: ① offsets(Stage2マッチング用)の作成:<br/>全ボクセルの移動ベクトル場result['flow']から、時刻tの各細胞座標peaks[t]の位置にあるベクトルだけを<br/>トリリニア補間(周囲2×2×2=8マスの重み付き平均)で抜き出し、<br/>downsample[1,4,4]と物理スケールSCALEを掛けて物理単位(µm)の移動ベクトル(N_cells, 3)に変換<br/>②offsetsに追加
         Flow->>Flow: dense.append(result['flow'][0].float16)；prev = nxt (L24)
-        Note over Flow: ② dense(Stage3 分裂ワープ用)の作成:<br/>全ボクセルの移動ベクトル場(3, 64, 64, 64)をそのままfloat16で保持。さらに次のループのprevに再利用
+        Note over Flow: ② dense(Stage3分裂ワープ用)の作成:<br/>全ボクセルの移動ベクトル場(3, 64, 64, 64)をそのままfloat16で保持。さらに次のループのprevに再利用
     end
     Flow-->>Clip: offsets(細胞移動用(N,3)[µm]),長さは99(100フレーむ-1), dense(全境界・全ボクセルの移動ベクトル場(99, 3, 64, 64, 64))
-    Note over Clip,Link_: 【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
+    end
+
+    rect rgb(255, 245, 235)
+    Note over Clip,Wire:【区分3: 細胞マッチング・候補グラフ生成】
+    Note over Clip,Link_:【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
     Clip->>Link_: build_matcher_scores(per_t, emb, cfg_emb, offsets) (L16-L55)
     Link_->>Emb: model.matcher(fa, ga, fb, gb, radius=12.0µm, offset) (L48-L50)
     Emb-->>Link_: ペアロジット logits & 消失/出現ロジット null_a, null_b
@@ -346,15 +356,16 @@ sequenceDiagram
     Clip->>Link_: link_embed(per_t, max_link=5.5, lam=12.0, sims, flow=offsets) (L170-L236)
     Link_-->>Clip: initial (初期ハンガリアン接続エッジ)
     Note over Clip,Link_: 【A2 検証ポイント】<br/>Matcher候補フィルタリング + コスト d + 12(1-p) でハンガリアン割当 (Total: 0.901953)
-    Clip->>R2: second_round(per_t, initial, emb, offsets, k=5) (L223)
+    Clip->>R2: second_round(per_t, initial, emb, offsets, k=5) (L61-L108, L223)
     R2-->>Clip: r2i, r2p (局所アフィン補正後の第2ラウンドTop-5候補と確率)
     Clip->>Wire: lp_wiring() & top_candidates() (L226-L228)
     Wire-->>Clip: nodes, edges, Top-5候補特徴量 (ci, cp, cr, cs, cd)
+    end
 ```
 
 ---
 
-### Stage 3. 分裂同定(Division Identification): 4系統の専門モデル【対応: A3(前半)】
+### Stage3. 分裂同定(Division Identification): 4系統の専門モデル【対応: A3(前半)】
 細胞分裂(1つの親細胞が2つの娘細胞に分裂するイベント)は、全データ中でごく稀にしか起きず、アノテーションも極めて不足しています(全199動画でわずか151件)。3位解法では、分裂を単一の分類器で解くのではなく、**時間的役割と入力解像度が異なる4系統のモデル群(計40個のTensorRTエンジン)**に分割して解きました。
 
 * **特徴量再利用 (Feature Reuse)**:
@@ -362,7 +373,7 @@ sequenceDiagram
 * **rot4 TTA**:
   - 4方向の90度回転TTA(Test-Time Augmentation)を適用し、細胞の分裂軸の方向に依存しない安定したスコアを獲得。
 1. **`native_parent` (元解像度・フローアライメント親モデル / メイン親モデル)**:
-   - `(1, 2, 2)` ダウンサンプリングの高解像度グリッド上で、Stage 2で推定した3D Dense Flow(空間ベクトル場)(`dense`)を用いて前後のフレームを中心フレーム $t$ にワーピング(位置合わせ)し、**5つのボリューム `[元t-1, tへワープしたt-1, 元t, tへワープしたt+1, 元t+1]`** を入力します。
+   - `(1, 2, 2)` ダウンサンプリングの高解像度グリッド上で、Stage2で推定した3D Dense Flow(空間ベクトル場)(`dense`)を用いて前後のフレームを中心フレーム $t$ にワーピング(位置合わせ)し、**5つのボリューム `[元t-1, tへワープしたt-1, 元t, tへワープしたt+1, 元t+1]`** を入力します。
    - 通常の細胞移動による見え方の変化をワーピングで打ち消すことで、「1つから2つに分裂する純粋な形態変化」だけを鋭敏に捉えます。
 2. **`parent` (3フレーム親細胞モデル)**:
    - 元画像の連続3フレーム `[t-1, t, t+1]` のみを入力とし、時刻 $t$ で分裂直前の親細胞である確信度を判定します。
@@ -376,7 +387,7 @@ sequenceDiagram
 * **半径16 µm 追加分裂候補グラフ (`radius16_graph`)**:
   - 分裂時には娘細胞が大きく弾け飛ぶことがあるため、通常の12 µmゲートを広げ、親スコアが高いノードに対しては半径 **16 µm** まで候補探索範囲を拡張した追加分裂プール(`division_graphs/<sid>.npz`)を構築します。
 
-#### Stage 3 関連ソースコードと行数
+#### Stage3 関連ソースコードと行数
 | ファイルパス | 関数・クラス | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | config.py | `DIV_ROLES`, `DIV_FRAMES`, `DIV_GRID`, `DIV_TTA` | L22-L29 | 4系統モデル(`div_415`, `div_478_pre`, `div_478_post`, `div_762`)とフレーム数(`3,3,3,5`)、`rot4` TTAの定義 |
@@ -384,9 +395,9 @@ sequenceDiagram
 | infer/div797_parent_reuse.py | `parent_scores_reuse()` | L18-L65 | 3D Dense Flow(空間ベクトル場)で前後フレームをワープさせ、`[prev, warp_prev, cur, warp_next, next]` の5入力で `native_parent` スコアを推論 |
 | div3f/data.py | `FlowWarp.warp()` | L43-L115 | 前方フローと符号反転逆フローを用いた3Dボリュームのグリッドサンプリング(ワーピング) |
 | lineage/div797_features.py | `radius16_graph()` | L31-L97 | 親スコア閾値以上のノードについて、フロー補正後半径16 µm以内の娘候補ペアを探索し追加分裂グラフを構築 |
-| infer/clip.py | `infer_clip()` 内の Stage ④ 呼び出しと保存 | L232-L254 | 4種の分裂スコアと半径16 µmグラフを計算し、`graphs/`, `confidence/`, `div_scores/`, `division_graphs/` に保存 |
+| infer/clip.py | `infer_clip()` 内の Stage④ 呼び出しと保存 | L232-L254 | 4種の分裂スコアと半径16 µmグラフを計算し、`graphs/`, `confidence/`, `div_scores/`, `division_graphs/` に保存 |
 
-#### Stage 3 シーケンス図
+#### Stage3 シーケンス図
 ```mermaid
 sequenceDiagram
     autonumber
@@ -425,7 +436,7 @@ sequenceDiagram
 
 ---
 
-### Stage 4. 候補スコアの確率較正(Calibration)【対応: A3(中盤)】
+### Stage4. 候補スコアの確率較正(Calibration)【対応: A3(中盤)】
 ニューラルネットが出力する生スコアや距離メトリクスを、後続の整数計画法で直接比較可能な **確率値(Log-odds)** に変換。
 
 * **特徴量エンジニアリング**:
@@ -435,7 +446,7 @@ sequenceDiagram
   - 分裂モデル群の親スコア、preスコア、postスコア、および前後の先行細胞への伝播スコア
 * **モデル構成**:
   - LightGBM、XGBoost、ロジスティック回帰を組み合わせ、通常エッジの接続確率 $P(\text{edge})$ と、分裂イベントの成立確率 $P(\text{div})$ を極めて正確に較正。
-ニューラルネットが出力する生スコアや距離メトリクスを、後段の整数計画法(Stage 5)の目的関数で直接比較可能な**「期待真陽性数(Expected TP)」と「期待偽陽性数(Expected FP)」**へと較正。
+ニューラルネットが出力する生スコアや距離メトリクスを、後段の整数計画法(Stage5)の目的関数で直接比較可能な**「期待真陽性数(Expected TP)」と「期待偽陽性数(Expected FP)」**へと較正。
 
 * **疎なアノテーション(約2.8%)を克服する「2段階確率分解 ($a \times q$)」**:
   - 未アノテーションの細胞同士を繋いだ正しいリンクを「偽陽性(FP)」と誤学習してしまうのを防ぐため、各候補イベントが**「① アノテーション領域内にあり採点対象となる確率 $a$ (Exposure probability)」**と、**「② 採点対象となった条件下で正解である条件付き確率 $q$ (Conditional probability)」**の2つを別々に予測。
@@ -444,7 +455,7 @@ sequenceDiagram
   - **通常リンク**: 距離・双方向マッチング確率・ランク・マージン・検出信頼度・親/pre/postスコアを入力とするロジスティック回帰(`predict_logistic`)。
   - **分裂イベント(1次プール `native` / 16µm追加プール `wide`)**: 線形モデルの初期ロジット(`base_margin`)をベースに、**LightGBM**(`native.txt`, `wide.txt`)と**XGBoost**(`native.ubj`, `wide.ubj`)の両方で条件付き分裂確率を予測し、`0.5 : 0.5` でアンサンブル平均する(初期シード解の生成にはLightGBM単独確率 `lgb_seed_conditional` を使用)。
 
-#### Stage 4 関連ソースコードと行数
+#### Stage4 関連ソースコードと行数
 | ファイルパス | 関数・クラス | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | lineage/build.py | `build_submission()` 内の `_lineage('predict', ...)` | L38-L40 | サブプロセスで `div846_lineage.py predict` を並列実行 |
@@ -453,7 +464,7 @@ sequenceDiagram
 | lineage/div797_lineage.py | `predict()` (ベース特徴量生成 & LightGBM推論) | L140-L245 | 親スコア閾値 `0.1` での分裂候補ペア生成、先行細胞への `pre` スコア集約、娘ペア幾何特徴量の計算、LightGBM推論 |
 | core/metric_calibration.py | `predict_logistic()`, `bounded_logit()` | L45-L95 | ロジスティック回帰による通常リンク・露出確率の推論とロジット変換 |
 
-#### Stage 4 シーケンス図
+#### Stage4 シーケンス図
 ```mermaid
 sequenceDiagram
     autonumber
@@ -484,12 +495,12 @@ sequenceDiagram
 
 ---
 
-### Stage 5. 系譜グラフ最適化(Lineage Graph Optimization): 整数計画法(LP/MILP)による一括解決【対応: A3(後半)】
-局所的なハンガリアン法や貪欲法では、「通常リンクを先に確定すると、本来分裂の娘である細胞が別の親に奪われてしまい、後から分裂を追加できなくなる」という競合問題が起きる。Stage 5では、**保持するノード、通常リンク、分裂イベント(親1＋娘2の三つ組)を単一の数理計画問題として同時に選択**する。
+### Stage5. 系譜グラフ最適化(Lineage Graph Optimization): 整数計画法(LP/MILP)による一括解決【対応: A3(後半)】
+局所的なハンガリアン法や貪欲法では、「通常リンクを先に確定すると、本来分裂の娘である細胞が別の親に奪われてしまい、後から分裂を追加できなくなる」という競合問題が起きる。Stage5では、**保持するノード、通常リンク、分裂イベント(親1＋娘2の三つ組)を単一の数理計画問題として同時に選択**する。
 
 * **アブレーション `A3` (Division models + Calibration + Joint LP/MILP optimization) の効果**:
   - **スコア**: Adjusted Edge Jaccard `0.911017` (**+0.009064**) / Division Jaccard `0.534759` (**+0.534759**) / **Total `0.964493` (+0.062540)**
-  - Stage 3の分裂モデル群、Stage 4の確率較正、そしてStage 5の同時最適化を一括導入したのが **A3** です(通常リンクの較正にも分裂特徴量を使い、分裂枝の生成にはLPが不可欠なためA3で同時導入する)。
+  - Stage3の分裂モデル群、Stage4の確率較正、そしてStage5の同時最適化を一括導入したのが **A3** です(通常リンクの較正にも分裂特徴量を使い、分裂枝の生成にはLPが不可欠なためA3で同時導入する)。
   - ここでDivision Jaccardが一気に `0.000 → 0.5348` へと立ち上がるだけでなく、12 µmゲートへの拡張と大域的なグラフ整合性制約によって通常エッジのJaccardも `0.9019 → 0.9110` に改善、トータルスコアが **+0.0625** 改善。
 * **生物学的整合性制約 (`MetricEventProblem` / `constrain`)**:
   1. **流入次数の制限**: 各細胞が持つ親は高々1つ($\text{in}(v) \le y_v$)。
@@ -500,7 +511,7 @@ sequenceDiagram
   - コンペ公式スコア(Pooled Adjusted Edge Jaccard + 0.1 × Division Jaccard)を現在の解の周りでテイラー線形化(`gradient()`)し、各イベントの限界価値(報酬・コスト)を算出。
   - HiGHSソルバーでまずLP緩和(`linprog`)を解き、非整数解が残った場合のみ分裂変数をバイナリ制約とした混合整数線形計画法(`milp`)を解きます。動画プール全体でカウントを集約しながら最大3ラウンド(`rounds=3`)係数を更新し、代理目的関数が改善したラウンドの解のみを採択。
 
-#### Stage 5 関連ソースコードと行数
+#### Stage5.関連ソースコードと行数
 | ファイルパス | 関数・クラス | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | lineage/build.py | `build_submission()` 内の `_lineage('optimize', ...)` | L41-L57 | テスト動画プールごとに `div846_lineage.py optimize` を起動 |
@@ -510,7 +521,7 @@ sequenceDiagram
 | core/metric_event_optimizer.py | `MetricEventProblem` (`__init__`, `gradient`, `linear_solve`) | L36-L219 | 流入・流出・分裂前後文脈の疎行列構築(L115-L132)、Pooled指標の勾配導出(L141-L159)、HiGHS LP緩和とMILP求解(L161-L219) |
 | lineage/div763_constraint.py | `constrain()` | L1-L45 | 「娘細胞が直後のフレームで再び分裂する」イベントペアを禁止する制約行を追加 |
 
-#### Stage 5 シーケンス図
+#### Stage5 シーケンス図
 ```mermaid
 sequenceDiagram
     autonumber
@@ -557,8 +568,8 @@ sequenceDiagram
 
 ---
 
-### Stage 6. 後処理(Post-processing): 仕上げ【対応: A4, A5, A6, A7】
-Stage 5のLP最適化で得られた系譜グラフ(`raw/<sid>.npz`)に対して、コンペの評価指標(Adjusted Edge Jaccard & Division Jaccard)の性質に合わせて設計された**4段階の後処理(`A4` → `A5` → `A6` → `A7`)**を順番に適用。
+### Stage6. 後処理(Post-processing): 仕上げ【対応: A4, A5, A6, A7】
+Stage5のLP最適化で得られた系譜グラフ(`raw/<sid>.npz`)に対して、コンペの評価指標(Adjusted Edge Jaccard & Division Jaccard)の性質に合わせて設計された**4段階の後処理(`A4` → `A5` → `A6` → `A7`)**を順番に適用。
 
 1. **アブレーション `A4`: Gap Closing — 最大3フレームのギャップ補完**:
    - **スコア**: Adjusted Edge Jaccard `0.916111` (**+0.005094**) / Division Jaccard `0.534759` / **Total `0.969587` (+0.005094)**
@@ -578,7 +589,7 @@ Stage 5のLP最適化で得られた系譜グラフ(`raw/<sid>.npz`)に対して
    - **A4** で単純な直線補間として挿入されたギャップ内ノードに対し、**A6** でフィットした各フレームのアフィン運動場(`affine_fields`)を適用。
    - ギャップ始点からアフィン運動場に沿って順方向に座標を伝播させ、終点でのズレをギャップ期間全体に線形分配(`bridge()`)することで、周囲の細胞の曲線的な流れに沿った滑らかな補間軌道へと修正。
 
-#### Stage 6 関連ソースコードと行数
+#### Stage6 関連ソースコードと行数
 | ファイルパス | 関数・クラス | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | lineage/run_metric_event_pipeline.py | `final_graph()` | L63-L85 | LP採択解から `raw` グラフを復元後、`gap_close`(**A4**) と `comp_sizes >= 6` フィルタ(**A5**)を適用して `final` に保存 |
@@ -589,7 +600,7 @@ Stage 5のLP最適化で得られた系譜グラフ(`raw/<sid>.npz`)に対して
 | core/gap_coordinate_refinement.py | `affine_fields()`, `bridge()`, `refine_gaps()` (**A7**) | L12-L88 | 時刻ごとのアフィン行列抽出(L12-L34)、運動場伝播＋終点誤差線形分配(L37-L46)、補間ノードの座標更新と衝突判定(L49-L88) |
 | submission.py | `export_submission()` | L1-L45 | 最終グラフ(`nodes`, `edges`)をコンペ提出フォーマットのCSVに変換 |
 
-#### Stage 6 シーケンス図
+#### Stage6 シーケンス図
 ```mermaid
 sequenceDiagram
     autonumber
@@ -635,20 +646,20 @@ sequenceDiagram
 
 ---
 
-## アブレーションスタディ: 段階的進化の軌跡(Stage 1〜6 との完全対応表)
+## アブレーションスタディ: 段階的進化の軌跡(Stage1〜6 との完全対応表)
 
 各ステージの追加・置き換えによるスコア向上の推移。
 
 | 実験ID | 対応Stage | 構成・変更点 | 主な該当ソースコード(行数) | 調整済み Edge Jaccard | Division Jaccard | トータルスコア |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **A0** | **Stage 1** | 検出 + ハンガリアン法(ドリフト補正あり) | common.py(L120-L139)<br>linking.py(L170-L236) | 0.890211 | 0.000000 | 0.890211 |
-| **A1** | **Stage 2 前半** | + 運動補正用3D Dense Flow(空間ベクトル場)(FlowNet3D) | div797_parent.py(L12-L25)<br>linking.py(L212-L222) | 0.901919 | 0.000000 | 0.901919 |
-| **A2** | **Stage 2 後半** | + Matcher候補フィルタリング & 対応スコア | clip.py(L26-L75)<br>linking.py(L16-L118) | 0.901953 | 0.000000 | 0.901953 |
-| **A3** | **Stage 3 + 4 + 5** | **+ 分裂モデル群 + GBDT較正 + 整数計画法(LP/MILP)同時最適化** | clip.py(L78-L123)<br>div797_parent_reuse.py(L18-L65)<br>div846_lineage.py(L33-L93)<br>metric_event_optimizer.py(L36-L219) | **0.911017** | **0.534759** | **0.964493** |
-| **A4** | **Stage 6 (1/4)** | + ギャップクロージング(Gap closing: 最大3フレーム) | gap_close.py(L39-L115) | 0.916111 | 0.534759 | 0.969587 |
-| **A5** | **Stage 6 (2/4)** | + 6ノード未満の短コンポーネント除去 | gap_close.py(L16-L36)<br>affine_refinement.py(L52-L53) | 0.918105 | 0.531915 | 0.971297 |
-| **A6** | **Stage 6 (3/4)** | + 検出ノードのアフィン座標微小調整 | coordinate_refinement.py(L21-L78) | 0.923141 | 0.540107 | 0.977151 |
-| **A7** | **Stage 6 (4/4)** | **+ 補間ノードのアフィン座標微小調整(最終完全パイプライン)** | gap_coordinate_refinement.py(L12-L88) | **0.923790** | **0.540107** | **0.977801** |
+| **A0** | **Stage1** | 検出 + ハンガリアン法(ドリフト補正あり) | common.py(L120-L139)<br>linking.py(L170-L236) | 0.890211 | 0.000000 | 0.890211 |
+| **A1** | **Stage2 前半** | + 運動補正用3D Dense Flow(空間ベクトル場)(FlowNet3D) | div797_parent.py(L12-L25)<br>linking.py(L212-L222) | 0.901919 | 0.000000 | 0.901919 |
+| **A2** | **Stage2 後半** | + Matcher候補フィルタリング & 対応スコア | clip.py(L26-L75)<br>linking.py(L16-L118) | 0.901953 | 0.000000 | 0.901953 |
+| **A3** | **Stage3 + 4 + 5** | **+ 分裂モデル群 + GBDT較正 + 整数計画法(LP/MILP)同時最適化** | clip.py(L78-L123)<br>div797_parent_reuse.py(L18-L65)<br>div846_lineage.py(L33-L93)<br>metric_event_optimizer.py(L36-L219) | **0.911017** | **0.534759** | **0.964493** |
+| **A4** | **Stage6 (1/4)** | + ギャップクロージング(Gap closing: 最大3フレーム) | gap_close.py(L39-L115) | 0.916111 | 0.534759 | 0.969587 |
+| **A5** | **Stage6 (2/4)** | + 6ノード未満の短コンポーネント除去 | gap_close.py(L16-L36)<br>affine_refinement.py(L52-L53) | 0.918105 | 0.531915 | 0.971297 |
+| **A6** | **Stage6 (3/4)** | + 検出ノードのアフィン座標微小調整 | coordinate_refinement.py(L21-L78) | 0.923141 | 0.540107 | 0.977151 |
+| **A7** | **Stage6 (4/4)** | **+ 補間ノードのアフィン座標微小調整(最終完全パイプライン)** | gap_coordinate_refinement.py(L12-L88) | **0.923790** | **0.540107** | **0.977801** |
 
 ### アブレーションから得られる決定的な洞察
 1. **A3での劇的なブレイクスルー (+0.0625)**:
@@ -666,7 +677,7 @@ sequenceDiagram
 | **基本設計思想** | **ビジュアルトラッキング**<br>細胞の見た目変化・FPN占有マップから直接追跡 | **幾何ヒューリスティクス & 特徴量工学**<br>距離・速度・カルマンフィルタベース | **物理フロー補正 + 数理計画法(LP)**<br>3D Dense Flow + 4段分裂判定 + 整数計画法 |
 | **検出器 (Detector)** | 3D U-Net (MAE事前学習 + 3Dベクトルフロー予測) | 3D U-Net (5-foldアンサンブル + 多段コンセンサス) | **2.5D U-Net (EffNetV2-L, B7) + 3D SegResNet** (実行時間の55%を投入) |
 | **分裂(Division)の解法** | **Soon Net**<br>分裂前後3クラス分類 + 娘細胞占有マップ | **ペア特徴量 + 分裂スタッキング**<br>距離・形状特徴からGBDT/ペアモデル | **4系統の専門モデル (div3f)**<br>parent / pre / post / native-parent + rot4 TTA |
-| **グラフ構築・追跡** | **貪欲法 (Greedy Decode)**<br>対数オッズ比による逐次決定 | **多段制約ソルバー**<br>Stage-6リランキング + フォーク投票 | **整数計画法 (Lineage LP)**<br>生物学的制約下での大域的一括最適化 |
+| **グラフ構築・追跡** | **貪欲法 (Greedy Decode)**<br>対数オッズ比による逐次決定 | **多段制約ソルバー**<br>Stage6リランキング + フォーク投票 | **整数計画法 (Lineage LP)**<br>生物学的制約下での大域的一括最適化 |
 | **後処理の工夫** | 線形平滑化 + ギャップ補完 + 短トラック除去 | 動的閾値 + カルマン速度ゲーティング | **オプティカルフローに基づくアフィン座標微調整** (A6, A7) |
 | **高速化手法** | PyTorchモデルの軽量化 | Python/NumPyの並列化 | **TensorRT (T4 x2) への全エンジン化** + 特徴量再利用 |
 
