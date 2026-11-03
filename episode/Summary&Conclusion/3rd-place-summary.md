@@ -322,9 +322,20 @@ sequenceDiagram
         end
     end
     DSE-->>Clip: per_t: 全100フレームの (座標 pk_np (N,3), 5-fold連結特徴量 (N,320)) リスト
-    Note over Clip, Flow: FlowNet3D推論で下記2つを同時に作って返す<br/>「① 各細胞の座標における移動ベクトル(offsets)」<br/>「② 空間全体の全ボクセルの移動ベクトル場(dense)」<br/>array...(100, 64, 256, 256)全100フレーム分の4次元配列生データ<br/>quantiles...zarrに準備してくれてる四分位数<br/>peaks...Stage1で取得した細胞中心座標s<br/>flow_model...3D Dense Flow(空間ベクトル場)推定用モデル(ssl_flow_flow_164_ep48.pt)を使用する。
-    Clip->>Flow: flow_with_dense(array, quantiles, peaks, flow_model) (L217)
-    Flow-->>Clip: offsets (各検出点のµm変位ベクトル), dense (3D密フロー場)
+    Note over Clip, Flow: FlowNet3D推論で下記2つを同時に作って返す<br/>「① 各細胞の座標における移動ベクトル(offsets)」<br/>「② 空間全体の全ボクセルの移動ベクトル場(dense)」<br/>array...(100, 64, 256, 256)全100フレーム分の4次元配列生データ(CachedZarrArrayでraw_cacheを共有)<br/>quantiles...zarrに準備してくれてる四分位数(0.001, 0.999)<br/>peaks...Stage1で取得した細胞中心座標s<br/>flow_model...3D Dense Flow(空間ベクトル場)推定用モデル(ssl_flow_flow_164_ep48.pt)を使用する。
+    Clip->>Flow: flow_with_dense(array, quantiles, peaks, flow, downsample=[1,4,4], device) (L217-L218)
+    Flow->>Flow: prev = prepare_zarr_frame(array, t=0, quantiles, downsample=[1,4,4]) (L15)
+    Note over Flow: 1. normalize() ... 先に輝度正規化 & 0未満を0に切り捨て(np.clip)<br/>2. downsample_mean() ... 後で[1,4,4]平均プーリング → (64, 64, 64)<br/>※store_embとは「0切り捨て」と「平均プーリング」の順序が逆のため専用関数を使用
+    loop フレーム境界 t = 0 .. T-2 (計99境界: 0→1, 1→2, ..., 98→99) (L17-L24)
+        Flow->>Flow: nxt = prepare_zarr_frame(array, t+1, quantiles, downsample=[1,4,4]) (L18)
+        Flow->>Flow: result = flow_model(prev[None,None], nxt[None,None], return_features=True) (L19-L20)
+        Note over Flow: [None,None]で(64,64,64) → 5次元(B:1, C:1, Z:64, Y:64, X:64)化して2枚を入力。<br/>result['flow'] として縮小グリッド全ボクセルの移動ベクトル場 (1, 3, 64, 64, 64) を出力(3はΔz,Δy,Δx)
+        Flow->>Flow: point_priors(result, points=peaks[t], downsample=[1,4,4])['flow_zyx'] * SCALE (L21-L23)
+        Note over Flow: ① offsets(Stage2マッチング用)の作成:<br/>全ボクセルの移動ベクトル場result['flow']から、時刻tの各細胞座標peaks[t]の位置にあるベクトルだけを<br/>トリリニア補間(周囲2×2×2=8マスの重み付き平均)で抜き出し、<br/>downsample[1,4,4]と物理スケールSCALEを掛けて物理単位(µm)の移動ベクトル(N_cells, 3)に変換<br/>②offsetsに追加
+        Flow->>Flow: dense.append(result['flow'][0].float16)；prev = nxt (L24)
+        Note over Flow: ② dense(Stage3 分裂ワープ用)の作成:<br/>全ボクセルの移動ベクトル場(3, 64, 64, 64)をそのままfloat16で保持。さらに次のループのprevに再利用
+    end
+    Flow-->>Clip: offsets (長さ99のリスト: 各境界の細胞変位 (N,3) [µm]), dense (全境界・全ボクセルの3D密フロー場 (99, 3, 64, 64, 64))
     Note over Clip,Link_: 【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
     Clip->>Link_: build_matcher_scores(per_t, emb, cfg_emb, offsets) (L16-L55)
     Link_->>Emb: model.matcher(fa, ga, fb, gb, radius=12.0µm, offset) (L48-L50)
