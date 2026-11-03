@@ -322,6 +322,7 @@ sequenceDiagram
         end
     end
     DSE-->>Clip: per_t: 全100フレームの (座標 pk_np (N,3), 5-fold連結特徴量 (N,320)) リスト
+    Note over Clip, Flow: FlowNet3D推論で下記2つを同時に作って返す<br/>「① 各細胞の座標における移動ベクトル(offsets)」<br/>「② 空間全体の全ボクセルの移動ベクトル場(dense)」
     Clip->>Flow: flow_with_dense(array, quantiles, peaks, flow_model) (L217)
     Flow-->>Clip: offsets (各検出点のµm変位ベクトル), dense (3D密フロー場)
     Note over Clip,Link_: 【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
