@@ -357,7 +357,15 @@ sequenceDiagram
     Link_-->>Clip: return scores:全99境界分のリスト[logits:(Na, Nb),相性スコア, null_a:(Na,),消失スコア, null_b:(Nb,),出現スコア ]
     Clip->>Link_: ※下記参照<br/>matcher_bidir_probs(scores)...双方向確率取得<br/>rev_probs(scores)...逆方向確率取得<br/>sym_probs(scores)...対象確率取得<br/>(L58-L118)
     Link_-->>Clip: sims(双方向確率), revs(逆方向確率), syms(対称確率)
-    Clip->>Link_: link_embed(per_t, max_link=5.5, lam=12.0, sims, flow=offsets) (L170-L236)
+    Note over Clip,Link_: 各フレーム境界(t→t+1)ごとに、『Flow移動補正後の距離 d』と『Matcherの双方向確率 sims』を組み合わせたコスト表を作り、ハンガリアン法(1対1の最適ペア決めアルゴリズム)を使って、確実性の高い『1対1の初期接続エッジ(initial)』を決定<br/>per_t...全100フレームの(細胞中心座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト<br/>lam...lambda:確率(1 - sim)にかける重み係数<br/>sims...双方向確率<br/>flow...FlowNet3Dで計算した各細胞の移動ベクトル[µm]
+    Clip->>Link_: link_embed(per_t, max_link=5.5[µm], lam=12.0, sims, flow=offsets) (L170-L236)
+    Note over Link_,Link_: ステップ①：全フレームの全細胞に通し番号(ノードID)を振る(L194)<br/>build_nodes() を呼び出し、100フレーム分の全細胞に 0, 1, 2, ... と<br/>動画全体での通し番号を振った表 nodes(全細胞数, 4: [t, z, y, x]) と、<br/>各フレームが何番から始まるかの目印 offsets を生成。
+    Note over Link_,Link_: ステップ②：各フレーム境界 t→t+1(計99境界)のループ(L206-L235)<br/>以下の手順で1対1のペアを決める
+    Note over Link_,Link_: ステップ②-1:Flow移動ベクトルの加算(L210-L222)<br/>- 時刻 t の細胞座標 ap と 時刻 t+1 の細胞座標 bp を物理単位(µm)に変換。<br/>- 時刻 t の座標 ap に FlowNet3D の移動予測ベクトル offsets[t] を足す (ap = ap + fa)。
+    Note over Link_,Link_: ステップ②-2:2段階の距離判定 (L197-L200) Flow補正後の距離 d を測り、<br/>繋ぐ候補として認めるか(ok = True/False)を2段階で判定<br/>1段階: 距離 d <= 5.5 µm なら無条件で合格(True)。<br/>2段階: 自信度付き拡張閾値: 距離が 5.5 µm を超えていても、<br/>d <= 12.0 µm かつMatcherの双方向確率 sim >= 0.5 と<br/>高ければTrueにする(素早く動いた細胞をMatcherの自信度で救済する考え方)。
+    Note over Link_,Link_: ステップ②-3:コスト表の作成とハンガリアン法(assign) (L201-L203, L229)<br/>Trueペアには以下の計算式で「コスト(低ければ低いほど良い)」を計算し、<br/>Falseペアには 1,000,000 (1e6: 絶対選ばれないペナルティ) を設定。<br/>cost = 距離 d + 12.0 × (1.0−確率sim)<br/>- 距離 d が 0 µm に近く、かつ確率 sim が 1.0 (100%) に近いほど、コストは 0 に近づく<br/>- このコスト表を SciPy の linear_sum_assignment(cost)(ハンガリアン法)に渡し、<br/>全体のコスト合計が最小になる1対1ペア pairs を算出する。
+    Note over Link_,Link_: ステップ②-4: 集団ドリフト補正を2回繰り返す(drift_iters = 2)(L230-L234)<br/>仮に決まったペア pairs について、実際のズレ bp[j] - ap[i] の<br/>中央値(np.median) を計算。これは「FlowNet3Dでもわずかに取り切れなかった、<br/>画面全体の平行移動の残drift」と考え、ap + drift でその残driftを補正して、<br/>もう一度ハンガリアン法(assign)をやり直し、これを<br/>2回 繰り返すことで、さらに精度の高い1対1ペアを確定する。
+    Note over Link_,Link_: ステップ②-5: 通し番号のエッジとして保存<br/>確定したペア (i, j) を動画全体の通しノード番号 (a0 + i, b0 + j) に変換、edges に追加し、<br/>最終的に (nodes, edges) を返却する(infer_clip では2番目の edges を initial として受け取っている)。
     Link_-->>Clip: initial (初期ハンガリアン接続エッジ)
     Note over Clip,Wire: 【A2 検証ポイント】<br/>Matcher候補フィルタリング + コスト d + 12(1-p) でハンガリアン割当 (Total: 0.901953)
     Clip->>R2: second_round(per_t, initial, emb, offsets, k=5) (L61-L108, L223)
