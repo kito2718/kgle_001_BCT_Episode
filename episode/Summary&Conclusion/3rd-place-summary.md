@@ -282,7 +282,7 @@ stage1では、peaks:(N,3 int32)フレーム毎細胞中心座標, confidence:(N
 | infer/second_round.py | `second_round()` | L61-L108 | 初期リンクから推定した局所アフィン運動場で再度Matcherを実行し、第2ラウンドのTop-5候補(`r2i, r2p`)を取得 |
 | infer/lp_wiring.py | `top_candidates()`, `lp_wiring()` | L42-L69, L125-L141 | 各ノードの上位5候補(`cand_idx`, `cand_prob`, `cand_rev`, `cand_sym`, `cand_dist`)と初期LP配線エッジを抽出 |
 
-#### Stage2.3D Dense Flow(空間ベクトル場)と細胞マッチング(Matching) シーケンス
+#### Stage2-1. 64次元特徴量(Embedding)生成 シーケンス
 ```mermaid
 sequenceDiagram
     autonumber
@@ -290,14 +290,9 @@ sequenceDiagram
     participant DSE as infer/clip.py<br/>detect_sample_embed() (L26-L54)
     participant Emb as core/unet/embed_unet.py<br/>EmbedUnet (5-fold)
     participant Sample as core/embedding.py<br/>sample_embeddings() (L6-L21)
-    participant Flow as infer/div797_parent.py<br/>flow_with_dense() (L12-L25)
-    participant Link_ as infer/linking.py<br/>build_matcher_scores() & link_embed()
-    participant Link2_ as infer/linking.py<br/>link_embed()
-    participant R2 as infer/second_round.py<br/>second_round() (L61-L108)
-    participant Wire as infer/lp_wiring.py<br/>lp_wiring() & top_candidates()
 
     rect rgb(235, 245, 255)
-    Note over Clip,Wire: 【区分1: 64次元特徴量(Embedding)生成】
+    Note over Clip,Sample: 【区分1: 64次元特徴量(Embedding)生成】
     Note over Clip,Emb: emb.models ... EmbedUnetモデル5つ(dl_401_fold0_last.ckpt-dl_401_fold4_last.ckpt)<br/>store_emb ... 生データ → Y, Xを1/4に平均プーリング[1, 4, 4] → 正規化した(64, 64, 64)のデータ<br/>peaks ... Stage1の出力(shape:(N,3 int32)のフレーム毎細胞中心座標)<br/>cfg_emb ... data.downsample:[1,4,4], loss.embed_radius_um:12.0, test.frames_per_batch:4, test.amp:True 等
     Note over Clip,Emb: Embedの名前の由来はheatmap(自信度)を出力する 2.5D U-Netを、<br/>"個別細胞識別の特徴量(64次元)"を出力する(AI・機械学習の分野では埋込みという)様に変更したため。<br/>「細胞の特徴を64次元ベクトルに埋め込む(Embed)ためのU-Net」だから EmbedUnetと命名している。
     Clip->>DSE: detect_sample_embed(emb.models, store_emb, sid, cfg_emb, device, peaks) (L214)
@@ -327,8 +322,17 @@ sequenceDiagram
     DSE-->>Clip: per_t: 全100フレームの(座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト
     end
 
+```
+#### Stage2-2. 移動ベクトル・3D Dense Flow(空間ベクトル場)生成 シーケンス
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Clip as infer/clip.py<br/>infer_clip() (L213-L230)
+    participant Flow as infer/div797_parent.py<br/>flow_with_dense() (L12-L25)
+
     rect rgb(235, 250, 240)
-    Note over Clip, Wire: 【区分2: 移動ベクトル・3D Dense Flow生成】
+    Note over Clip, Flow: 【区分2: 移動ベクトル・3D Dense Flow生成】
     Note over Clip, Flow: FlowNet3D推論で下記2つを同時に作って返す<br/>「① 各細胞の座標における移動ベクトル(offsets)」<br/>「② 空間全体の全ボクセルの移動ベクトル場(dense)」<br/>array...(100, 64, 256, 256)全100フレーム分の4次元配列生データ(CachedZarrArrayでraw_cacheを共有)<br/>quantiles...zarrに準備してくれてる四分位数(0.001, 0.999)<br/>peaks...Stage1で取得した細胞中心座標s<br/>flow_model...3D Dense Flow(空間ベクトル場)推定用モデル(ssl_flow_flow_164_ep48.pt)を使用する。
     Clip->>Flow: flow_with_dense(array, quantiles, peaks, flow, downsample=[1,4,4], device) (L217-L218)
     Flow->>Flow: prev = prepare_zarr_frame(array, t=0, quantiles, downsample=[1,4,4]) (L15)
@@ -345,6 +349,19 @@ sequenceDiagram
     Flow-->>Clip: offsets(細胞移動量(N,3)[µm]),長さは99(100フレーむ-1), dense(全境界・全ボクセルの移動ベクトル場(99, 3, 64, 64, 64))
     Note over Clip,Flow:【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
     end
+
+```
+#### Stage2-3. 細胞マッチング(Matching)・候補グラフ生成 シーケンス
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Clip as infer/clip.py<br/>infer_clip() (L213-L230)
+    participant Emb as core/unet/embed_unet.py<br/>EmbedUnet (5-fold)
+    participant Link_ as infer/linking.py<br/>build_matcher_scores() & link_embed()
+    participant Link2_ as infer/linking.py<br/>link_embed()
+    participant R2 as infer/second_round.py<br/>second_round() (L61-L108)
+    participant Wire as infer/lp_wiring.py<br/>lp_wiring() & top_candidates()
 
     rect rgb(255, 245, 235)
     Note over Clip,Wire:【区分3: 細胞マッチング・候補グラフ生成】
@@ -373,9 +390,9 @@ sequenceDiagram
     Note over Link2_,Link2_: ③ ただし、距離が少し遠くても (ext_um = 12.0 µm 以内)、<br/>Matcherの確率 sim が<br/>p_th (0.5) 以上と高ければ、特別に候補 (True) に追加する<br/>if ext_um > max_link_um and isinstance(sim, np.ndarray):<br/>ok |= (d <= ext_um) & (sim >= p_th)
     Note over Link2_,Link2_: ④ ハンガリアン法に渡すコスト行列 (N, M) を作る<br/>候補(ok=True)なら「距離 d + 12.0 * (1 - 類似度)」、<br/>候補外(ok=False)なら「100万(実質無限大)」<br/>cost = np.where(ok, d + lam * (1.0 - sim), 1e6)
     Note over Link2_,Link2_: ⑤ ハンガリアン法で「合計コストが最小になる1対1の<br/>ペア (行番号ri, 列番号ci)」を求める<br/>ri, ci = linear_sum_assignment(cost)
-    Note over Link2_,Link2_: ⑥ 選ばれたペアのうち、ちゃんと候補条件 (ok[i, j]) を<br/>満たしているものだけリストにして返す<br/>return [(i, j) for i, j in zip(ri, ci) if ok[i, j]]
-    Link2_-->>Link_: pairs
-    Note over Link_,Link_: ステップ②-5: 集団ドリフト補正を2回繰り返す(drift_iters = 2)(L230-L234)<br/>仮に決まったペア pairs について、実際のズレ bp[j] - ap[i] の<br/>中央値(np.median) を計算。これは「FlowNet3Dでもわずかに取り切れなかった、<br/>画面全体の平行移動の残drift」と考え、ap + drift でその残driftを補正して、<br/>もう一度ハンガリアン法(assign)をやり直し、これを<br/>2回 繰り返すことで、さらに精度の高い1対1ペアを確定する。
+    Note over Link2_,Link2_: ⑥ 選ばれたペアのうち、正しく候補条件 (ok[i, j]) を<br/>満たしているものだけリストにして返す<br/>return [(i, j) for i, j in zip(ri, ci) if ok[i, j]]
+    Link2_-->>Link_: 仮決めpairs
+    Note over Link_,Link_: ステップ②-5: 集団ドリフト補正を2回繰り返す(反復改善法:「ニワトリが先か卵が先か」問題を解く解法)(L230-L234)<br/>仮に決まったペア pairs について、実際のズレ bp[j] - ap[i] の<br/>中央値(np.median) を計算。これは「FlowNet3Dでもわずかに取り切れなかった、<br/>画面全体の平行移動の残drift」と考え、ap + drift でその残driftを補正して、<br/>もう一度ハンガリアン法(assign)をやり直し、これを<br/>2回 繰り返すことで、さらに精度の高い1対1ペアを確定する。
     Note over Link_,Link_: ステップ②-6: 通し番号のエッジとして保存<br/>確定したペア (i, j) を動画全体の通しノード番号 (a0 + i, b0 + j) に変換、edges に追加し、<br/>最終的に (nodes, edges) を返却する(infer_clip では2番目の edges を initial として受け取っている)。
     Link_-->>Clip: initial (初期ハンガリアン接続エッジ)
     Note over Clip,Wire: 【A2 検証ポイント】<br/>Matcher候補フィルタリング + コスト d + 12(1-p) でハンガリアン割当 (Total: 0.901953)
