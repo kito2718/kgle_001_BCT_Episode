@@ -396,9 +396,13 @@ sequenceDiagram
     Link2_-->>Link_: 仮決めpairs
     Note over Link_,Link_: ステップ②-5: 集団ドリフト補正を2回繰り返す<br/>(反復改善法:「ニワトリが先か卵が先か」問題を解く解法)(L230-L234)<br/>FlowNet3Dは背景の「移動0」判定に引っ張られてベクトル量をい小さく<br/>評価する問題を内包するので、その問題への対応を実施。<br/>具体的には、仮決めpairsを使って、全体ドリフト量(bp[j] - ap[i])の中央値(np.median)<br/>からdriftを計算。<br/>ap + drift 補正し、もう一度ハンガリアン法(assign)をやり直し、これを<br/>2回 繰り返し反復改善で1対1ペアを生成する。
     Note over Link_,Link_: ステップ②-6: 通し番号のエッジとして保存<br/>確定したペア (i, j) を動画全体の通しノード番号 (a0 + i, b0 + j) に変換、edges に追加し、<br/>最終的に (nodes, edges) を返却(呼び元は第2引数 edges を initial として受け取る)。
-    Link_-->>Clip: initial (初期エッジ)
+    Link_-->>Clip: initial(初期エッジ)
     Note over Clip,Wire: 【A2 検証ポイント】<br/>Matcher候補フィルタリング + コスト d + 12(1-p) でハンガリアン割当 (Total: 0.901953)
+    Note over Clip,R2: second_round() ... 分裂した2人目の娘細胞の候補を探す<br/>per_t ... 全100フレームの(細胞中心座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト<br/>edges ... initial(初期エッジ)<br/>model...emb。3D CNN(64特徴抽出)でなく、もう片方のヘッド(.matcher:ペア類似度計算ヘッド)を使う。<br/>cfgはembモデルのconfig。cfg.loss.embed_radius_um(12.0 µm)だけを使用。<br/>drifts ... offsets:(µm単位,shape:(N,3))各細胞の移動ベクトル(Stage2-2の成果物)。
     Clip->>R2: second_round(per_t, initial, emb, offsets, k=5) (L61-L108, L223)
+    Note over R2:link_embed(1巡目のマッチング)では<br/>ハンガリアン法による 1対1マッチング なため、<br/>子細胞が2つに分裂していても、時刻 t+1 の 1人目の子細胞しか<br/>リンク(initial エッジ)されない。<br/>(second_round.py の冒頭コメントによると)単純に<br/>2番手候補を取る方法を採用すると、<br/>Cross-Attentionの干渉によりうまくいかない。
+    Note over R2: Cross-Attentionの干渉とは<br/>Matcherは時刻 t と時刻 t+1 の細胞群の間で Cross-Attention を<br/>計算するが、その時、1人目の娘細胞(より近い・似ている方)が存在していると、<br/>Attention と Softmax の確率質量が1人目に吸い取られ、<br/>2人目の娘細胞のスコアが構造的に低く抑え込まれる干渉が起きる。<br/>そこで対応として、second_round() では、1人目の娘細胞(1対1マッチングの確定した方)を<br/>入力から除外し再計算することで2人目の娘細胞がペア候補に残ることできる。
+    Note over R2: 出力された上位 k 個の候補（r2i, r2p）は以下の2箇所で使われる。<br/>分裂候補プール(下流の分裂判定): 2人目の娘候補として特徴量に入る。<br/>LP Wiring(lp_wiring.py): 1巡目で競合により外れたリンクを<br/>大域的線形計画法(LP)で繋ぎ直す際の確率補正特徴量（r2, top1）として使われる。
     R2-->>Clip: r2i, r2p (局所アフィン補正後の第2ラウンドTop-5候補と確率)
     Clip->>Wire: lp_wiring() & top_candidates() (L226-L228)
     Wire-->>Clip: nodes, edges, Top-5候補特徴量 (ci, cp, cr, cs, cd)
@@ -406,7 +410,8 @@ sequenceDiagram
 ```
 
 <br/>  
-※10 **sims(双方向確率), revs(逆方向確率), syms(対称確率)の詳細説明**
+※10  
+**sims(双方向確率), revs(逆方向確率), syms(対称確率)の詳細説明**
 
 `build_matcher_scores()` が出した生の点数(`scores`: `logits`, `null_a`, `null_b`)から、**用途に合わせて以下の3種類の確率表 `(Na, Nb)`** を生成する(L58-L118)。
 
