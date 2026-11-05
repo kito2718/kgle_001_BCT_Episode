@@ -9,6 +9,7 @@
 - ドリフトベクトル ... フレーム(64×256×256)で1つのベクトル(Δz,Δy,Δx)。※1動画は100フレーム=フレーム境界t→t+1 は99。なので、ドリフトベクトルも99本存在する。
 - 3D Dense Flow(空間ベクトル場) ... ボクセル座標(z,y,x) ごとのベクトル。
 - アブレーション ... モデルの一部を取り除いてその部分がモデルの性能にどのような影響を与えるかを調べる実験
+- FlowNet3D ... t, t+1 間の3D点群のそれぞれが「3次元空間のどの方向へどれだけ移動したか」という移動ベクトル量を予測する代表的なDeepLerningモデル。実装時は①:探索半径を無制限にできない(GPUメモリからあふれてしまう)問題と、②:オプティカルフロー由来のバイアス(背景の「移動0」に引っ張られる)問題があるのを意識しとく必要がある。[github](https://github.com/xingyul/flownet3d),[論文](https://arxiv.org/abs/1806.01411)
 
 ## 概要
 先日、Biohub細胞トラッキングコンペが完了しました。
@@ -282,7 +283,7 @@ stage1では、peaks:(N,3 int32)フレーム毎細胞中心座標, confidence:(N
 | infer/second_round.py | `second_round()` | L61-L108 | 初期リンクから推定した局所アフィン運動場で再度Matcherを実行し、第2ラウンドのTop-5候補(`r2i, r2p`)を取得 |
 | infer/lp_wiring.py | `top_candidates()`, `lp_wiring()` | L42-L69, L125-L141 | 各ノードの上位5候補(`cand_idx`, `cand_prob`, `cand_rev`, `cand_sym`, `cand_dist`)と初期LP配線エッジを抽出 |
 
-#### Stage2-1. 64次元特徴量(Embedding)生成 シーケンス
+#### Stage2-1. 細胞毎の64次元特徴量(Embedding)生成 シーケンス
 ```mermaid
 sequenceDiagram
     autonumber
@@ -324,6 +325,7 @@ sequenceDiagram
 
 ```
 #### Stage2-2. 移動ベクトル・3D Dense Flow(空間ベクトル場)生成 シーケンス
+※フレームの移動ベクトル量は算出してない。Stage2-3で求める。
 
 ```mermaid
 sequenceDiagram
@@ -365,7 +367,7 @@ sequenceDiagram
 
     rect rgb(255, 245, 235)
     Note over Clip,Wire:【区分3: 細胞マッチング・候補グラフ生成】
-    Note over Clip,Link_: 隣り合うフレーム t と t+1 (計99箇所の境界) ごとに、時刻 t の全細胞(𝑁𝑎個)と時刻 t+1 の全細胞(𝑁𝑏個)を総当たりで見比べて、『どの細胞とどの細胞が同じ細胞か』の相性スコア表(ロジット)を作る<br/>per_t...全100フレームの(細胞中心座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト<br/>emb...5-foldのEmbedUnetを束ねたmodels。後半ヘッドの emb.matcher(NodeMatcher 5個：特徴量同士を比較して相性スコアを出すネットワーク)を使用<br/>cfg_emb...EmbedUnetの設定なんだけど、使うのはcfg_emb.loss.embed_radius_um(12.0 µm: マッチング候補を探す半径)だけ<br/>offsets...時刻tの各細胞の移動ベクトル(N, 3)[µm]
+    Note over Clip,Link_: 隣り合うフレーム t と t+1 (計99箇所の境界) ごとに、時刻 t の全細胞(𝑁𝑎個)と時刻 t+1 の全細胞(𝑁𝑏個)を<br/>総当たりで見比べて、『どの細胞とどの細胞が同じ細胞か』の相性スコア表(ロジット)を作る<br/>per_t...全100フレームの(細胞中心座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト<br/>emb...5-foldのEmbedUnetを束ねたmodels。後半ヘッドの emb.matcher(NodeMatcher 5個：特徴量同士を比較して相性スコアを出すネットワーク)を使用<br/>cfg_emb...EmbedUnetの設定なんだけど、使うのはcfg_emb.loss.embed_radius_um(12.0 µm: マッチング候補を探す半径)だけ<br/>offsets...時刻tの各細胞の移動ベクトル(N, 3)[µm]
     Clip->>Link_: build_matcher_scores(per_t, emb, cfg_emb, offsets) (L16-L55)
     Note over Link_,Emb: 『時刻 t と t+1 のどの細胞が同じ細胞か』のスコア付けと、消失/出現細胞のスコア付けを実行<br/>fa.float()...shape:(Na,320),時刻 t の各細胞の 5-fold連結特徴量 (64次元 × 5モデル=320次元)<br/>ga...shape:(Na, 3),時刻 t の各細胞の3次元物理座標(z,y,x:peaks[t] × SCALE)<br/>fb.float()...shape:(Na,320),時刻t+1の各細胞の 5-fold連結特徴量 (64次元 × 5モデル=320次元)<br/>gb...shape:(Na, 3),時刻t+1の各細胞の3次元物理座標(z,y,x:peaks[t] × SCALE)<br/>offset...FlowNet3Dが予測した、時刻 t の各細胞の移動ベクトル(offsets[t])
     Link_->>Emb: EnsembleEmb::matcher(fa, ga, fb, gb, radius=12.0µm, offset) (L48-L50)
@@ -375,7 +377,7 @@ sequenceDiagram
     Link_-->>Clip: return scores:全99境界分のリスト[logits:(Na, Nb),相性スコア, null_a:(Na,),消失スコア, null_b:(Nb,),出現スコア ]
     Clip->>Link_: ※10下記参照<br/>matcher_bidir_probs(scores)...双方向確率取得<br/>rev_probs(scores)...逆方向確率取得<br/>sym_probs(scores)...対象確率取得<br/>(L58-L118)
     Link_-->>Clip: sims(双方向確率), revs(逆方向確率), syms(対称確率)
-    Note over Clip,Link_: 各フレーム境界(t→t+1)ごとに、『Flow移動補正後の距離 d』と『Matcherの双方向確率 sims』を組み合わせたコスト表を作り、ハンガリアン法(1対1の最適ペア決めアルゴリズム)を使って、確実性の高い『1対1の初期接続エッジ(initial)』を決定<br/>per_t...全100フレームの(細胞中心座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト<br/>lam...lambda:確率(1 - sim)にかける重み係数<br/>sims...双方向確率<br/>flow...FlowNet3Dで計算した各細胞の移動ベクトル[µm]
+    Note over Clip,Link_: 各フレーム境界(t→t+1)ごとに、『Flow移動補正後の距離 d』と『Matcherの双方向確率 sims』を組み合わせたコスト表を作り<br/>ハンガリアン法(1対1の最適ペア決めアルゴリズム)を使って、確実性の高い『1対1の初期接続エッジ(initial)』を決定<br/>per_t...全100フレームの(細胞中心座標 pk_np(N,3), 5-fold連結特徴量(N,320))のリスト<br/>lam...lambda:確率(1 - sim)にかける重み係数<br/>sims...双方向確率<br/>flow...FlowNet3Dで計算した各細胞の移動ベクトル[µm]
     Clip->>Link_: link_embed(per_t, max_link=5.5[µm], lam=12.0, sims, flow=offsets) (L170-L236)
     Note over Link_,Link_: ステップ①：全フレームの全細胞に通し番号(ノードID)を振る(L194)<br/>build_nodes() を呼び出し、100フレーム分の全細胞に 0, 1, 2, ... と<br/>動画全体での通し番号を振った表 nodes(全細胞数, 4: [t, z, y, x]) と、<br/>各フレームが何番から始まるかの目印 offsets を生成。
     Note over Link_,Link_: ステップ②：各フレーム境界 t→t+1(計99境界)のループ(L206-L235)<br/>以下の手順で1対1のペアを決める
@@ -392,9 +394,9 @@ sequenceDiagram
     Note over Link2_,Link2_: ⑤ ハンガリアン法で「合計コストが最小になる1対1の<br/>ペア (行番号ri, 列番号ci)」を求める<br/>ri, ci = linear_sum_assignment(cost)
     Note over Link2_,Link2_: ⑥ 選ばれたペアのうち、正しく候補条件 (ok[i, j]) を<br/>満たしているものだけリストにして返す<br/>return [(i, j) for i, j in zip(ri, ci) if ok[i, j]]
     Link2_-->>Link_: 仮決めpairs
-    Note over Link_,Link_: ステップ②-5: 集団ドリフト補正を2回繰り返す(反復改善法:「ニワトリが先か卵が先か」問題を解く解法)(L230-L234)<br/>仮に決まったペア pairs について、実際のズレ bp[j] - ap[i] の<br/>中央値(np.median) を計算。これは「FlowNet3Dでもわずかに取り切れなかった、<br/>画面全体の平行移動の残drift」と考え、ap + drift でその残driftを補正して、<br/>もう一度ハンガリアン法(assign)をやり直し、これを<br/>2回 繰り返すことで、さらに精度の高い1対1ペアを確定する。
-    Note over Link_,Link_: ステップ②-6: 通し番号のエッジとして保存<br/>確定したペア (i, j) を動画全体の通しノード番号 (a0 + i, b0 + j) に変換、edges に追加し、<br/>最終的に (nodes, edges) を返却する(infer_clip では2番目の edges を initial として受け取っている)。
-    Link_-->>Clip: initial (初期ハンガリアン接続エッジ)
+    Note over Link_,Link_: ステップ②-5: 集団ドリフト補正を2回繰り返す<br/>(反復改善法:「ニワトリが先か卵が先か」問題を解く解法)(L230-L234)<br/>FlowNet3Dは背景の「移動0」判定に引っ張られてベクトル量をい小さく<br/>評価する問題を内包するので、その問題への対応を実施。<br/>具体的には、仮決めpairsを使って、全体ドリフト量(bp[j] - ap[i])の中央値(np.median)<br/>からdriftを計算。<br/>ap + drift 補正し、もう一度ハンガリアン法(assign)をやり直し、これを<br/>2回 繰り返し反復改善で1対1ペアを生成する。
+    Note over Link_,Link_: ステップ②-6: 通し番号のエッジとして保存<br/>確定したペア (i, j) を動画全体の通しノード番号 (a0 + i, b0 + j) に変換、edges に追加し、<br/>最終的に (nodes, edges) を返却(呼び元は第2引数 edges を initial として受け取る)。
+    Link_-->>Clip: initial (初期エッジ)
     Note over Clip,Wire: 【A2 検証ポイント】<br/>Matcher候補フィルタリング + コスト d + 12(1-p) でハンガリアン割当 (Total: 0.901953)
     Clip->>R2: second_round(per_t, initial, emb, offsets, k=5) (L61-L108, L223)
     R2-->>Clip: r2i, r2p (局所アフィン補正後の第2ラウンドTop-5候補と確率)
@@ -722,6 +724,79 @@ sequenceDiagram
    - ギャップ補完(A4)で +0.005、短トラック除去(A5)で +0.0017、そしてアフィン座標微調整(A6, A7)でさらに +0.0065 の向上を達成し、最終CV **0.9778** (Public LB: 0.977 / Private LB: 0.967) に到達。
 
 ---
+---
+---
+---
+
+## 学習編
+
+### 2. 「Stage2-2（`flow_with_dense`）ですでに移動ベクトルを求めているのに、なぜ `link_embed` でまたフレーム全体のドリフト補正をするのか？」
+
+これ、すごくもっともな疑問です！
+実は作者自身も [`linking.py` の182〜188行目](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/infer/linking.py#L182-L188) のコメントに、その理由をわざわざ書いています。
+
+```python
+# linking.py L182-186
+# flow: ... Applied to the frame-a positions BEFORE the drift loop, so the existing collective
+# estimator keeps running on top and absorbs whatever global bias the field has left
+```
+
+理由は **「FlowNet3D（Stage2-2）には『予測できる最大距離の上限（リミッター）』と『わずかな全体誤差（バイアス）』があるため、2段構えで役割分担しているから」** です。
+
+1. **1段目：Stage2-2 の `flow_with_dense`（`ap = ap + fa`）**
+   * ここは **「場所ごとに違う複雑な動き（局所的な流れ）」** を補正します（例：画面の右上は右に流れ、左下は下に流れる、といった胚の変形）。
+   * ただし、FlowNet3D の内部構造（[`ssl_flow/model.py` L68-69](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/ssl_flow/model.py#L68-L69)）を見ると、探索範囲の上限が数ボクセル（`correlation_radius=(2,3,3)`, `max_displacement_vox=(4,6,6)`）に制限されています。また、AIの推論なので画面全体で「あと $0.3\,\mu\text{m}$ だけ全体的にズレが残っている」といった微小なバイアス（積み残し）が出ることがあります。
+2. **2段目：Stage2-3 の `drift` ループ（`ap + drift`）**
+   * 1段目の `ap = ap + fa` で各細胞の個別の動きを打ち消した**後**に、「それでもまだ画面全体に残っている共通のズレ（残差ドリフト）」を `np.median` で測って、最後にピタッとゼロに合わせ込む **「微調整（ダメ押し）」** の役割をしています。
+
+つまり、**「FlowNet3Dで大まかな局所〜全体の流れを引き算し（`ap + fa`）、それでも残ったわずかな画面全体のズレを中央値ドリフト補正（`+ drift`）で完全に吸収する」** という2段ロケットになっています。
+
+---
+
+### 3. 「元データは `t` と `t+1` の3D輝度画像だけなのに、なぜ移動ベクトルを推論・学習できるのか？」
+
+「ただの白黒の明るさ（輝度）の3D画像2枚から、なぜ矢印（移動ベクトル $\Delta z, \Delta y, \Delta x$）が出てくるのか？教師データ（正解の矢印）なんて全ボクセルに付いていないのにどうやって学習したのか？」という疑問ですね。
+
+これには **①推論の仕組み（テンプレートマッチングのAI版）** と **②自己教師あり学習（`ssl_flow` の意味）** の2つのタネがあります。
+
+#### タネ①：どうやって2枚の輝度画像から移動ベクトルを推論しているのか？
+[`ssl_flow/model.py` の `local_correlation_flow`（L7-L36）](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/ssl_flow/model.py#L7-L36) を見ると、実はモデルの中で **「総当たりズラし重ね合わせ（局所相関：Local Correlation）」** を計算しています！
+
+1. 時刻 $t$ の3D画像と、時刻 $t+1$ の3D画像を、それぞれ3D CNN（`enc0`, `enc1`）に通して、各ボクセルの特徴ベクトルを作ります。
+2. ある座標 $(z, y, x)$ について、時刻 $t+1$ 側の画像を **上下左右前後に $(\Delta z, \Delta y, \Delta x) = (-3 \sim +3)$ ボクセルずつ実際にズラしながら、時刻 $t$ の画像と内積（コサイン類似度）をとります**（L20-L29：`score = (a * candidate).sum(1)`）！
+3. 「右に2マス、上に1マスずらしたときに一番模様がピッタリ重なった（内積が最大になった）！」という確率 `prob` を計算し、そのズレ量 `(dz, dy, dx)` の期待値をとることで、**「このボクセルは $(+1, +2)$ 動いた！」という移動ベクトルを直接算出**しています（L31-L36）。
+4. 最後にデコーダ（`dec1`, `dec0`, `flow_head`）で、小数点以下の細かいズレ（`residual`）を補正して出力しています。
+
+つまり、ブラックボックスな魔法で矢印を当てているのではなく、**モデルの中で実際に画像を少しずつズラして重ね合わせ、「一番模様が一致するズラし量（＝移動ベクトル）」を計算する仕組み（Optical Flow：オプティカルフロー）** が組み込まれているのです。
+
+#### タネ②：正解の矢印がないのに、どうやって学習（トレーニング）したのか？
+ディレクトリ名が **`ssl_flow`** となっていますよね。
+この **`ssl`** は **Self-Supervised Learning（自己教師あり学習）** の略です！
+
+オプティカルフロー（FlowNet）の世界では、人間が作った正解ラベル（教師データ）を使わずに、**「`t` と `t+1` の輝度画像だけ」で移動ベクトルを学習する定番のトリック（Photometric Loss / Warping Loss）** があります：
+
+1. モデルに、時刻 $t$ と 時刻 $t+1$ の輝度画像を見せて、移動ベクトル場 `flow` を予測させます。
+2. もしその予測された移動ベクトル `flow` が**正しければ**、**「時刻 $t+1$ の画像を `flow` の分だけ逆方向に引き戻して変形（ワープ）させた画像は、時刻 $t$ の元の画像とピッタリ同じ絵になるはず」** ですよね？
+3. そこで、**「ワープさせた $t+1$ の画像」と「元の $t$ の画像」の輝度の引き算（誤差）** を計算し、「2枚の絵がピッタリ重なるように（誤差が0になるように）モデルの重みを更新せよ！」と学習させます（＋訓練データにある一部の正解細胞リンクの座標ズレも補助ロスとして使えます）。
+
+つまり、**「次のフレームの絵を移動ベクトルで動かしたときに、前のフレームの絵とピッタリ重なるかどうか」を自分自身で答え合わせできる** ため、ただの `t` と `t+1` の輝度データ（動画）さえあれば、空間全体の移動ベクトル場をひとりでに学習できるのです！
+
+---
+
+### まとめ
+
+* **なぜ2回補正するのか？**：`flow_with_dense`（FlowNet3D）は「場所ごとに違う局所的な動き」を補正し、`link_embed` の `drift` は「それでもわずかに残った画面全体の共通のズレ（残差）」を中央値で完全にゼロにするダメ押し補正。
+* **なぜ輝度画像から移動ベクトルが分かるのか？**：
+  * **推論時**：モデル内部で画像を上下左右前後に少しずつズラして内積（コサイン類似度）をとり、「一番模様が重なるズラし量」を移動ベクトルとして出力しているから。
+  * **学習時（`ssl_flow`）**：「予測したベクトルで $t+1$ の画像を動かして、$t$ の画像とピッタリ重なるか？」を答え合わせにする **自己教師あり学習（SSL）** で学習しているから。
+
+ここが繋がると、なぜディレクトリ名が `ssl_flow` なのか、なぜ先ほどの内積（コサイン類似度）が `ssl_flow/model.py` の28行目（`score = (a * candidate).sum(1)`）にも登場するのかまで、すべて一本の線で繋がります！
+
+---
+---
+---
+---
+
 
 ## 1位・2位・3位解法の比較
 
