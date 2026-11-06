@@ -443,7 +443,6 @@ sequenceDiagram
 | **`syms`** | `matcher_sym_probs(scores)` | **対称確率**<br>(Symmetric) | $\text{sigmoid}\left(\frac{2\cdot\text{logits} - \text{null\_a} - \text{null\_b}}{2}\right)$<br>※Softmaxを使わず、シグモイド関数で `0.0〜1.0` に変換 | **周囲のライバル数に依存しない絶対評価用**。<br>`sims` や `revs` は周囲の候補と合計100%を奪い合う(Softmax)ため密集地帯で確率が下がるが、`syms` は「ペアの点数が消滅(`null_a`)・出現(`null_b`)の平均を上回るか」だけを1対1で評価する。初期LP配線(`lp_wiring`)やStage4の特徴量で使用。 |
 
 
-
 ---
 
 ### Stage3. 分裂同定(Division Identification): 4系統の専門モデル【対応: A3(前半)】
@@ -474,14 +473,17 @@ sequenceDiagram
 #### Stage3 関連ソースコードと行数
 | ファイルパス | 関数・クラス | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
-| config.py | `DIV_ROLES`, `DIV_FRAMES`, `DIV_GRID`, `DIV_TTA` | L22-L29 | 4系統モデル(`div_415`, `div_478_pre`, `div_478_post`, `div_762`)とフレーム数(`3,3,3,5`)、`rot4` TTAの定義 |
-| infer/clip.py | `div3f_scores_roles_reuse()` | L78-L123 | `parent`, `pre`, `post` の3モデルについて、時間ウィンドウ間でエンコーダ特徴量をキャッシュ再利用しながら `rot4` TTA推論 |
-| infer/div797_parent_reuse.py | `parent_scores_reuse()` | L18-L65 | 3D Dense Flow(空間ベクトル場)で前後フレームをワープさせ、`[prev, warp_prev, cur, warp_next, next]` の5入力で `native_parent` スコアを推論 |
-| div3f/data.py | `FlowWarp.warp()` | L43-L115 | 前方フローと符号反転逆フローを用いた3Dボリュームのグリッドサンプリング(ワーピング) |
-| lineage/div797_features.py | `radius16_graph()` | L31-L97 | 親スコア閾値以上のノードについて、フロー補正後半径16 µm以内の娘候補ペアを探索し追加分裂グラフを構築 |
-| infer/clip.py | `infer_clip()` 内の Stage④ 呼び出しと保存 | L232-L254 | 4種の分裂スコアと半径16 µmグラフを計算し、`graphs/`, `confidence/`, `div_scores/`, `division_graphs/` に保存 |
+| config.py | `DIV_ROLES`, `DIV_FRAMES`, `DIV_GRID`, `DIV_TTA` | L22-L29 | 4系統モデルの定義: モデル①`div_415`(parent)、モデル②`div_478_pre`(pre)、モデル③`div_478_post`(post)、モデル④`div_762`(native_parent) |
+| infer/clip.py | `infer_clip()` 内の Stage3 呼び出し | L232-L236 | L233でモデル①〜③(`div3f_scores_roles_reuse`)を呼び出し、L235でモデル④(`parent_scores_reuse`)を呼び出し |
+| infer/clip.py | `div3f_scores_roles_reuse()` | L78-L123 | **【モデル①(parent), ②(pre), ③(post)】** の推論。同じ生3フレーム入力形式を持つ3モデルについて、時間ウィンドウ間でエンコーダ特徴量をキャッシュ再利用しながら `rot4` TTA推論 |
+| infer/div797_parent_reuse.py | `parent_scores_reuse()` | L18-L65 | **【モデル④(native_parent)】** の推論。3D Dense Flowで前後フレームをワープさせ、`[prev, warp_prev, cur, warp_next, next]` の5入力でスコアを推論 |
+| div3f/data.py | `FlowWarp.warp()` | L43-L115 | モデル④用: 前方フローと符号反転逆フローを用いた3Dボリュームのグリッドサンプリング(ワーピング) |
+| lineage/div797_features.py | `radius16_graph()` | L31-L97 | 4モデルのスコア算出後、親スコア閾値以上のノードについてフロー補正後半径16 µm以内の娘候補ペアを探索し追加分裂グラフを構築 |
+| infer/clip.py | `infer_clip()` 内の中間キャッシュ保存 | L247-L254 | 4種の分裂スコアと半径16 µmグラフを計算し、`graphs/`, `confidence/`, `div_scores/`, `division_graphs/` に保存 |
 
 #### Stage3 シーケンス図
+
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -491,16 +493,23 @@ sequenceDiagram
     participant Warp as div3f/data.py<br/>FlowWarp.warp() (L43-L115)
     participant R16 as lineage/div797_features.py<br/>radius16_graph() (L31-L97)
 
+    rect rgb(240, 248, 255)
+    Note over Clip,Div3f: 【モデル① parent / モデル② pre / モデル③ post の推論】<br/>入力: 通常の3フレーム [t-1, t, t+1] (生画像)
     Clip->>Div3f: div3f_scores_roles_reuse({parent, pre, post}, store_div, nodes) (L233)
-    loop 4回転ビュー (rot4 TTA, L98-L122) & 各ロール・各Foldモデル (L104-L105)
-        loop 時間チャンクごと (batch=8, L107-L122)
-            Div3f->>Div3f: 未計算フレームのみ model.encode() し cache[u] に保存 (L109-L114)
-            Div3f->>Div3f: 3フレーム窓 [t-1, t, t+1] の特徴量を連結し model.decode() (L115-L117)
-            Div3f->>Div3f: 各ノード位置のロジットを sample_logits() & sigmoid平均 (L118-L120)
+    loop 4回転ビュー (rot4 TTA, L98-L122)
+        loop 3ロール (parent / pre / post) × 各5-foldモデル (L104-L105)
+            loop 時間チャンクごと (batch=8, L107-L122)
+                Div3f->>Div3f: 未計算フレームのみ model.encode() し cache[u] に保存 (L109-L114)
+                Div3f->>Div3f: 3フレーム窓 [t-1, t, t+1] の特徴量を連結し model.decode() (L115-L117)
+                Div3f->>Div3f: 各ノード位置のロジットを sample_logits() & sigmoid平均 (L118-L120)
+            end
         end
     end
-    Div3f-->>Clip: phase['score'(parent)], phase['pre'], phase['post']
+    Div3f-->>Clip: phase['score'(①parent)], phase['pre'(②pre)], phase['post'(③post)]
+    end
 
+    rect rgb(255, 245, 238)
+    Note over Clip,NatPar: 【モデル④ native_parent の推論】<br/>入力: 5ボリューム [元t-1, ワープt-1, 元t, ワープt+1, 元t+1]
     Clip->>NatPar: parent_scores_reuse(roles['native_parent'], store_div, nodes, dense) (L235)
     loop 各時刻 t (L30-L64)
         NatPar->>Warp: warp(sid, t, frames[t-1, t, t+1]) (L37)
@@ -511,7 +520,8 @@ sequenceDiagram
             NatPar->>NatPar: 4回転ビューの sigmoid 確率を平均 (L57-L59)
         end
     end
-    NatPar-->>Clip: phase['native_parent']
+    NatPar-->>Clip: phase['native_parent'(④native_parent)]
+    end
 
     Clip->>R16: radius16_graph(g, phase, per_t, offsets, emb.matcher) (L245)
     R16-->>Clip: wide (半径16µm拡張分裂候補グラフ)
