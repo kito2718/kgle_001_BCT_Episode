@@ -271,7 +271,7 @@ stage1では、peaks:(N,3 int32)フレーム毎細胞中心座標, confidence:(N
   - 初期割り当てとしてのHungarian法、および近傍半径12 µm以内のTop-5候補エッジを構築。
 生物の細胞は組織全体の流動や自律的な移動を伴うため、単純なユークリッド距離だけでは誤った対応付けになる。そのためStage2では「画像全体の3Dオプティカルフロー推定(**A1**)」と「細胞単位の外見・位置アテンションによるマッチング(**A2**)」の2段階アプローチで対応候補の絞り込みを実施。
 
-#### Stage2 関連ソースコードと行数
+#### Stage2 関数一覧
 | ファイルパス | 関数・クラス | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
 | infer/clip.py | `detect_sample_embed()`, `EnsembleMatcher`, `EnsembleEmb` | L26-L75 | 5-foldのEmbedUnetから各検出位置の特徴量をサンプリングして連結(L26-L54)、5-foldのMatcherロジットを平均(L57-L68) |
@@ -348,7 +348,7 @@ sequenceDiagram
         Flow->>Flow: dense.append(result['flow'][0].float16)；prev = nxt (L24)
         Note over Flow: ② dense(Stage3分裂ワープ用)の作成:<br/>全ボクセルの移動ベクトル場(3, 64, 64, 64)をそのままfloat16で保持。さらに次のループのprevに再利用
     end
-    Flow-->>Clip: offsets(細胞移動量(N,3)[µm]),長さは99(100フレーむ-1), dense(全境界・全ボクセルの移動ベクトル場(99, 3, 64, 64, 64))
+    Flow-->>Clip: offsets(細胞移動量(N,3)[µm]:長さは99(100フレーム-1)), dense(全境界・全ボクセルの移動ベクトル場(99, 3, 64, 64, 64))
     Note over Clip,Flow:【A1 検証ポイント】<br/>座標に offsets(3D Dense Flow(空間ベクトル場))を加算してハンガリアン法を実行 (Total: 0.901919, +0.0117)
     end
 
@@ -403,14 +403,35 @@ sequenceDiagram
     Note over R2:link_embed(1巡目のマッチング)では<br/>ハンガリアン法による 1対1マッチング なため、<br/>子細胞が2つに分裂していても、時刻 t+1 の 1人目の子細胞しか<br/>リンク(initial エッジ)されない。<br/>(second_round.py の冒頭コメントによると)単純に<br/>2番手候補を取る方法を採用すると、<br/>Cross-Attentionの干渉によりうまくいかない。
     Note over R2: Cross-Attentionの干渉とは<br/>Matcherは時刻 t と時刻 t+1 の細胞群の間で Cross-Attention を<br/>計算するが、その時、1人目の娘細胞(より近い・似ている方)が存在していると、<br/>Attention と Softmax の確率質量が1人目に吸い取られ、<br/>2人目の娘細胞のスコアが構造的に低く抑え込まれる干渉が起きる。<br/>そこで対応として、second_round() では、1人目の娘細胞(1対1マッチングの確定した方)を<br/>入力から除外し再計算することで2人目の娘細胞がペア候補に残ることできる。
     Note over R2: 出力された上位 k 個の候補（r2i, r2p）は以下の2箇所で使われる。<br/>分裂候補プール(下流の分裂判定): 2人目の娘候補として特徴量に入る。<br/>LP Wiring(lp_wiring.py): 1巡目で競合により外れたリンクを<br/>大域的線形計画法(LP)で繋ぎ直す際の確率補正特徴量（r2, top1）として使われる。
-    R2-->>Clip: r2i, r2p (局所アフィン補正後の第2ラウンドTop-5候補と確率)
-    Clip->>Wire: lp_wiring() & top_candidates() (L226-L228)
+    Note over R2: (15)<br/>引数per_t.peaksをnumpy配列(shape:-1,3)に変換<br/>pos = [np.asarray(p, np.float64).reshape(-1, 3) for p, _ in per_t]
+    Note over R2: (16-19)<br/>n:全頂点数,offs:各フレームの開始位置を取得
+    Note over R2: (20-22)<br/>claimed:shape(n,:bool)に「すでに親が決まった子細胞」にフラグを立てる
+    Note over R2: (28)<br/>100フレームloop
+    Note over R2: (31)<br/>「親が決まってない子細胞」のindexを取得する<br/>free = np.nonzero(~claimed[offs[t + 1]:offs[t + 2]])[0]
+    Note over R2: (38)<br/>drifts[t]をtensor配列に変換(元よりshape:(len(pa), 3)の形なので特に何もしない)<br/>※Failsafe的な扱い。
+    Note over R2: (40)<br/>model.matcher()を実行。後段ヘッドの「2フレーム間の細胞同士を突き合わせて<br/>ペアのスコアを出す」を使う<br/>戻り値<br/>logits(Na,Nb_free) ... 時刻 t の細胞 i と、時刻 t+1 の空き細胞 j の<br/>「ペア成立らしさ」のスコア(ロジット) 。<br/>null_a(Na,) ... 時刻 t の細胞 i に対する 「時刻 t+1 の空き細胞の中に<br/>はリンク先が存在しない(該当なし)」というスコア(ロジット) 。<br/>_(null_b、(Nb_free,))...逆に時刻 t+1 の>空き細胞側から<br/>見た「親が存在しない(新規出現)」のスコア、今回未使用。
+    Note over R2: (42)<br/>Softmax()実行。<br/>model.matcher()が出力した生のスコア(ロジット)を「確率(0.0～1.0)」に変換。<br/>logits の右端にこの null_a をくっつけて Softmax を取ることで、<br/>「無理やり遠い空き細胞に高確率をつけてしまう」のを防ぐ。<br/>(誰とも似ていなければ null_a が勝つため、<br/>空き細胞への確率は全部0近くになる)。<br/>torch.softmax(torch.cat([logits, null_a[:, None]], 1), 1)[:, :-1]
+    Note over R2: (45)<br/>高確率順にソートして上位 5 個の列番号を取得<br/>order = np.argsort(-p_ab, axis=1)[:, :kk]<br/>order(Na, 5)には、free 配列の中で何番目か(index番号:0～Nb_free-1)が設定されている。
+    Note over R2: (47)<br/>free[order]はローカルindexなので、全100フレーム通しのindexに戻す<br/>idx[offs[t]:offs[t + 1], :kk] = free[order] + offs[t + 1]
+    Note over R2: (46,48)<br/>上位5個の確率値をそのまま抜き出して prob に設定<br/>prob[offs[t]:offs[t + 1], :kk] = p_ab[rows, order]
+    R2-->>Clip: r2i:2人目の娘細胞候補(5つ,中身はindex)群, r2p:その確率
+    Clip->>Wire: lp_wiring()(L226→L125-141):link_embed()の結果とsecond_round()の結果をすべて合体、<br/>動画全体(全100フレーム)でコンペの評価スコアが最大に<br/>なるように、1対1の細胞リンク(edges)を繋ぎ直す。<br/>lpは Linear Programming=線形計画法 の略。
+    Note over R2: ①nodes(全細胞の座標テーブル)の作成(127〜130行目)<br/>per_t の各細胞の座標(z, y, x) を四捨五入して整数にし、先頭に時刻 t を<br/>くっつけて(全細胞数 N, 4) の配列 [t, z, y, x] を生成<br/>長すぎて割愛
+    Note over R2: ②各細胞の「上位5候補」の情報をまとめる：top_candidates()(131行目)<br/>各細胞について、1巡目の確率(sims)が高い上位5個の接続先候補を<br/>取り出し、それぞれの「3種類の確率(sims, revs, syms)」と<br/>「移動補正後の距離(cd)」を (N, 5) の表にまとめる。<br/>ci, cp, crev, csym, cd = top_candidates(per_t, sims, revs, syms, offsets)
+    Note over R2: ③ロジスティック回帰で「本当に正しいペア<br/>である確率 pcal」を計算する：calibrated_prob()(132行目)<br/>②で集めた上位5候補それぞれについて、link_embed()の情報と<br/>second_round()の情報を合わせた13個の特徴量(距離、<br/>link_embed()の確率3種、1位候補との差、<br/>second_round()の確率 r2、second_round()で1位だったか top1 など)を作り、<br/>学習済みの重み W を掛けて、補正済みの正確な確率 pcal(0.0〜1.0)を算出。
+    Note over R2: ④線形計画法(LP)で動画全体のベストな繋ぎ方を一括決定する：solve()(133〜141行目)<br/>距離12µm以内のすべての候補ペア(arcs)と<br/>③の確率 pcal を、数理最適化<br/>ソルバー(scipy.optimize.linprog の HiGHS)に入れる。
+    Wire-->>Clip: 戻り値<br/>nodes(shape:N,4):全100フレーム全細胞の [t, z, y, x]の一覧表,<br/>edges(shape:(M,2)):動画全体で最適だと選ばれた「(時刻 t の細胞の行番号 i, 時刻 t+1 の細胞の行番号 j)」の1対1ペア一覧<br/>※なお、ここではまだ「1対1のベース」を作っている段階であり、<br/>1つの親から2本の矢印を出す「細胞分裂」の追加は、<br/>この後ステージ④で分裂スコア div3f を計算したあとの下流処理で実施する。
+    Clip->>Clip: aligned_confidence(nodes, peaks, conf)(L227)
+    Note over Clip: 100フレーム分のリストに分かれている conf を、<br/>1本の1次元配列 (N,) に連結する<br/>peaks...ステージ①(細胞検出 common.detect_tta())で得られた「各細胞の中心座標」<br/>conf ... ステージ①(細胞検出 common.detect_tta())で得られた<br/>「各細胞の中心座標における検出ヒートマップのピーク値(細胞らしさの確信度)
+    Note over Clip: 戻り値<br/>confidence(shape: (N,)） ... 全細胞数 N 個分の1次元配列,確信度
+    Clip->>Wire: top_candidates()(L228) 
     Wire-->>Clip: nodes, edges, Top-5候補特徴量 (ci, cp, cr, cs, cd)
     end
 ```
 
 <br/>  
 ※10  
+
 **sims(双方向確率), revs(逆方向確率), syms(対称確率)の詳細説明**
 
 `build_matcher_scores()` が出した生の点数(`scores`: `logits`, `null_a`, `null_b`)から、**用途に合わせて以下の3種類の確率表 `(Na, Nb)`** を生成する(L58-L118)。
@@ -426,7 +447,7 @@ sequenceDiagram
 ---
 
 ### Stage3. 分裂同定(Division Identification): 4系統の専門モデル【対応: A3(前半)】
-細胞分裂(1つの親細胞が2つの娘細胞に分裂するイベント)は、全データ中でごく稀にしか起きず、アノテーションも極めて不足しています(全199動画でわずか151件)。3位解法では、分裂を単一の分類器で解くのではなく、**時間的役割と入力解像度が異なる4系統のモデル群(計40個のTensorRTエンジン)**に分割して解きました。
+細胞分裂(1つの親細胞が2つの娘細胞に分裂するイベント)は、全データ中でごく稀にしか起きず、アノテーションも極めて不足しています(全199動画でわずか151件)。3位解法では、分裂を単一の分類器で解くのではなく、**時間的役割と入力解像度が異なる4系統のモデル群(計40個のTensorRTエンジン)** に分割して解決している。
 
 * **特徴量再利用 (Feature Reuse)**:
   - 重複する時間ウィンドウ間でエンコーダ特徴量をキャッシュして再利用することで、計算負荷の高い40個のTensorRT分裂エンジンを極めて効率的に動作させています。
@@ -796,6 +817,54 @@ sequenceDiagram
   * **学習時（`ssl_flow`）**：「予測したベクトルで $t+1$ の画像を動かして、$t$ の画像とピッタリ重なるか？」を答え合わせにする **自己教師あり学習（SSL）** で学習しているから。
 
 ここが繋がると、なぜディレクトリ名が `ssl_flow` なのか、なぜ先ほどの内積（コサイン類似度）が `ssl_flow/model.py` の28行目（`score = (a * candidate).sum(1)`）にも登場するのかまで、すべて一本の線で繋がります！
+
+
+Ran list files in core directory
+Analyzed embedding.py:L1-23
+Analyzed model.py:L1-55
+Ran list root workspace directory
+Analyzed README_JP.md:L1-53
+Analyzed config.yaml:L1-6
+
+その疑問は**非常に鋭く、かつ本質的**です！
+おっしゃる通り、「もし64次元特徴量が単純に『細胞の見た目（形や大きさ）』だけをそのまま表しているなら、分裂前の大きな親細胞と分裂直後の小さな娘細胞では見た目が違うので、コサイン類似度は下がるはず」というのは**大正解**です。
+
+にもかかわらず、このパイプラインで親細胞と娘細胞がちゃんと結びつくのには、**3つの明確な理由**があります。
+
+---
+
+### 理由1：64次元特徴量は「見た目の特徴」ではなく、「正解の親子が同じ向きになるように」学習されているから
+もし画像だけで自己教師あり学習などをしていたら、見た目が違う親と娘の特徴量は別物になります。
+しかし、このモデルの64次元特徴量（Siamese 2.5D U-Net）は、訓練データの正解ラベル（分裂を含む本当の親子ペア）を使って、**「時刻 $t$ の親細胞と、時刻 $t+1$ の娘細胞のベクトルが同じ向き（コサイン類似度が高くなるよう）に近づけ」** という教師あり対照学習（InfoNCE Loss）で鍛えられています（[`core/matcher.py` 3〜14行目](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/core/matcher.py#L3-L14)）。
+
+そのため、64次元ベクトルには以下の2つが含まれています。
+1. **3D U-Netの広い受容野から得られる「周囲の細胞配置・局所的な文脈」**:
+   細胞1個だけの形だけでなく、「周囲のどの位置関係にいる細胞か」という空間的な文脈情報が特徴量に埋め込まれています。
+2. **「分裂しそうな親」と「分裂直後の娘」を同じ特徴空間にマッピングする変換**:
+   モデル自身が学習を通じて、「分裂前のこういう見た目の親」と「分裂後のこういう見た目の娘」に似たベクトルを出力するように学習しています。
+
+---
+
+### 理由2：実際には「コサイン類似度」だけではなく、「距離の近さ」と「周囲との消去法（Cross-Attention）」で決めているから
+実は、本番パイプライン（[`clip.py` 219〜222行目](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/infer/clip.py#L219-L222)）では、64次元特徴量の単純なコサイン類似度だけでマッチングしているわけではありません。
+
+1. **`NodeMatcher` による空間パズル（Cross-Attention ＋ 相対座標）**:
+   [`core/matcher.py` の6〜8行目](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/core/matcher.py#L6-L8)に *「各ノードの特徴量＋コサイン類似度だけでは表現できない関係性を推論する」* と書かれている通り、Matcherは **3次元座標とCross-Attention** を使っています。
+   たとえ分裂で見かけが変わっていても、「時刻 $t$ でここにいた親細胞のすぐ近くに娘細胞が現れ、周りの他の細胞たちはそれぞれ自分の移動先が決まっている」という**周囲との位置関係（消去法）**から、MLP（`pair_mlp`）が高いペアスコアを出します。
+2. **`link_embed()` の距離コスト**:
+   1巡目のマッチング（[`linking.py` 201行目](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/infer/linking.py#L201)）のコストは **`距離 d + 12.0 × (1 - 確率)`** です。分裂した娘細胞は親細胞のすぐ近く（数µm以内）に生まれるため、まず「物理的に一番近い」という強い制約で1人目の娘と結びつきます。
+
+---
+
+### 理由3：「分裂前後の見た目の明確な差」は、別の専用モデル（`div3f`）が直接見ている！
+1位解法のコメントにある「分裂前と分裂後では人が見て分かりやすいほど見かけに差がある」という性質は、この3位解法でも**まったく同じように重要視されており、Matcherとは別の専用モデル（ステージ④の `div3f`）が担当**しています。
+
+- **Matcher（`emb`）の役割**:
+  見かけが変わっても「どの細胞とどの細胞が繋がるか（候補ペア）」を位置関係と文脈から見つける。
+- **`div3f`（分裂スコアモデル）の役割**:
+  前後3フレームの3D画像を直接見て、**「分裂特有の見た目の変化（分裂親 `parent`・分裂直前 `pre`・分裂直後 `post`）」を画像から直接見分ける**（[`clip.py` 232〜235行目](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/3rdPlaceSolution/biohub-inference/biohub_infer/infer/clip.py#L232-L235)）。
+
+つまり、**「見た目が大きく変わるからこそ、ペア候補探し（`matcher` + `second_round`）と、分裂特有の見た目の判定（`div3f`）を役割分担させ、最後（下流のLightGBM/XGBoost較正器とLP）で合体させている」** というのが、この3位解法の全体像になります。'][]' -> none! Clean end.']*
 
 ---
 ---
