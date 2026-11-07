@@ -1,5 +1,8 @@
-__pycache__/
-working/
-*.pyc
+biohub-4th-place-artifacts/models/
+biohub-4th-place-artifacts/wheels/
 .venv/
 input/
+working/
+__pycache__/
+*.pyc
+*.tmp
