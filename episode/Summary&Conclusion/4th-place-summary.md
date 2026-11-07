@@ -3,26 +3,53 @@
 
 ## Abstract
 - biohub 4位解法(BarryZhou / songqizhouさん Public 0.969 / Private 0.962)のまとめ
-- 数百エポックの学習を避けてた。
-- 「生物学的現象の観察」と「評価指標の特性」に注目
-- NN、CPU上の勾配ブースティング木(LightGBM / CatBoost)、大域的ILP(整数線形計画法)で解決
+  - 数百エポックの学習を避ける。
+  - 「生物学的現象の観察」と「評価指標の特性」に注目。
+  - NN、CPU上の勾配ブースティング木(LightGBM / CatBoost)、大域的ILP(整数線形計画法)で解決。
 
 **用語解説**
 
-- **DoG(Difference of Gaussians)** ... 異なる半径($\sigma$)のガウシアンフィルタをかけた2枚の画像の差分をとることで、特定の大きさの明るい塊(ブロブ/細胞核)を強調・検出する古典的画像処理手法。4位解法では深層学習モデルから完全に独立した「動画ごとの細胞密度ルーター」と「疎な動画の偽トラック除去ゲート」の2箇所で重要な役割を果たす。
+- **DoG(Difference of Gaussians)** ... 異なる半径($\sigma$)のガウシアンフィルタをかけた2枚の画像の差分で、特定の大きさの明るい塊(ブロブ/細胞核)を強調・検出する古典的画像処理手法。4位解法では深層学習モデルから完全に独立した「Stage1.動画ごとの細胞密度ルーター」と「Stage6.疎な動画の偽トラック除去ゲート」の2箇所で重要な役割を果たす。
 - **Cellpose型ベクトル場と移流(Advection)** ... 各ボクセルから「自身が属する細胞核の中心」を指す3D単位ベクトル場を予測し、閾値以上の高確率ボクセル(シード)をそのベクトル場に沿って少しずつ移動(移流: Advection)させて収束点でクラスタリングする検出手法([Stringer et al., Nature Methods 2021](https://www.nature.com/articles/s41592-020-01018-x))。密集して2つの細胞核が接触し1つの明るい塊に見えても、ベクトルが別々の中心を向くため明確に分離できる。
 - **InfoNCE(対照学習: Contrastive Learning)** ... 連続するフレーム $t$ と $t+1$ における「同一細胞のパッチ」の埋め込みベクトル同士を引き寄せ、「周囲の競合する別細胞のパッチ」を遠ざける損失関数。細胞の個体識別特徴(Cell Embedding)の学習に使用。
 - **ILP(整数線形計画法: Integer Linear Programming)** ... グラフ上の出現・消失・移動リンク・細胞分裂のすべてにコスト(または報酬)を与え、生物学的整合性制約のもとで動画全体の総コストを最小化する大域的数理最適化手法。4位解法では `tracksdata` ライブラリと `SCIP` ソルバーを使用し、「ノードごとの個別分裂コスト($\text{base} - 16s_i$)」を導入したことが単一で最大のスコア向上(+0.035)をもたらした。
 
+- **細胞密度ルーター** ... 基本的には作者の造語なんですが、動画の細胞密度をみてルーターの役目をさせているからこの名前にしている様です。具体的には、各動画の平均細胞核間隔(dog_sp)を見て、19.7 µm を境に後続パイプラインのルート(処理経路)を2つ(密なルート/疎なルート)に振り分けています。
+
+```mermaid
+graph TD
+    %% Top Level
+    A[数理最適化 Mathematical Optimization] --> B[連続最適化 Continuous Optimization]
+    A --> C[離散最適化・組合せ最適化 Discrete / Combinatorial Optimization]
+    A --> D[その他・発展的最適化]
+
+    %% Continuous branch
+    B --> B1[線形計画法 LP]
+    B --> B2[非線形計画法 NLP]
+    B --> B3[二次計画法 QP]
+
+    %% Discrete branch
+    C --> C1[整数計画法 IP / ILP]
+    C --> C2[混合整数計画法 MILP]
+    C --> C3[グラフ・ネットワーク最適化 <br> 最短経路・最大流など]
+    C --> C4[メタヒューストンティクス <br> 遺伝的アルゴリズムなど]
+
+    %% Methods / Algorithms (Cross-cutting)
+    C1 -.-> M1[分枝限定法 Branch & Bound]
+    C1 -.-> M2[切除平面法 Cutting Plane]
+    B1 -.-> M3[シンプレックス法 / 内点法]
+
+    %% Other branch
+    D --> D1[凸最適化 Convex Optimization]
+    D --> D2[確率的・ロバスト最適化]
+```
+
 ## 概要
 先日、Biohub細胞トラッキングコンペが完了しました。
-Private LB 1353位/3800人と大変悔しい結果に終わりましたが、Kaggleの素晴らしいところは、トップランカーたちの卓越した解法が惜しみなく公開されることです。
-この学びの宝庫を徹底的に解析し、確実に自身のスキルへと昇華させるべく、今回は4位に入賞された BarryZhou(songqizhou)さんの解法を深掘りします。
+Private LB 1353位/3800人と大変悔しい結果に終わりましたが、Kaggleの素晴らしいところは、トップ層の解法が公開されることです。
+このお宝を徹底的に解析し、確実に自身のスキルへと昇華させるべく、今回は4位に入賞された BarryZhou(songqizhou)さんの解法を深掘りします。
 
-1位〜3位の解法が「数百エポック学習した巨大な3D U-Netや15モデルアンサンブル」「40個のTensorRTエンジン」といった重厚なGPU計算資源を投入していたのに対し、4位解法は**「計算リソースが非常に控えめ(最大の3D Netでも18Mパラメータ・わずか10エポック学習、結合モデルはすべてCPU上のLightGBMとCatBoost)」**でありながら、生物学的なドメイン知識を緻密な特徴量と数理最適化に落とし込むことでトップ層に食い込んでいる点が極めてユニークで実践的です。
-
-## biohub 4位の解法まとめ
-4位の解法は、全6Stageで構成されています。最大の武器は**「生物学をモデル化する(Model the biology)」**という徹底したアプローチと、ILP(整数線形計画法)内部に組み込まれた**「ノードごとの学習済み分裂コスト($6 - 16s_i$)」**です。
+1位〜3位の解法が「数百エポック学習した巨大な3D U-Netや15モデルアンサンブル」「40個のTensorRTエンジン」といった重厚なGPU計算していたのに対し、4位解法は **「計算リソースが非常に控えめ(最大の3D Netでも18Mパラメータ・わずか10エポック学習、結合モデルはすべてCPU上のLightGBMとCatBoost)」** です。生物学的なドメイン知識を緻密な特徴量と数理最適化に落とし込むアプローチを重要視している点が極めてユニークで実践的です。どうして省計算リソースを意識したかは不明です。計算リソースは平等だと思うのですけど。
 
 - 解説のURL(Writeup)
 https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/4th-place-solution
@@ -30,6 +57,18 @@ https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writ
 https://www.kaggle.com/code/songqizhou/biohub-4th-place-solution
 - コード&学習済み重みデータセット(Artifacts)
 https://www.kaggle.com/datasets/songqizhou/biohub-4th-place-artifacts
+
+## biohub 4位解法まとめ
+4位の解法は、全6Stageで構成されています。最大の特徴は **「生物学をモデル化する(Model the biology)」** というアプローチと、ILP(整数線形計画法)内部に組み込まれた **「ノードごとの学習済み分裂コスト($6 - 16s_i$)」** です。
+
+- **Stage0**. Main(CPU処理とGPU並列実行)
+- **Stage1**. 密度ルーター(DoG Router)と 3D Net 細胞検出(Cell Detection)
+- **Stage2**. 候補リンク構築とマルチモーダル特徴量・LightGBMエッジモデル(Linking)
+- **Stage3**. 細胞分裂の事前確率モデル(Division Prior: 3段階ハイブリッド構成)
+- **Stage4**. ノード別分裂コスト付き大域的ILPと動き補償平滑化(ILP & Smoothing)
+- **Stage5**. 原画像トレースによる分岐検証(Fork Verifier)とギャップ補間(Gap Filling)
+- **Stage6**. 疎な動画向けのトラック支持ゲート(Track-Support Gate)
+
 
 ### 「生物学と評価指標の観察」から生まれた7つの設計指針
 
@@ -160,7 +199,7 @@ flowchart TD
 
 ## パイプラインの詳細解説
 
-### Stage0. Mainオーケストレーション(CPUバックグラウンド処理とGPU並列実行)
+### Stage0. Main(CPU処理とGPU並列実行)
 
 ノートブック本体(`biohub-4th-place-solution.py`)は、Kaggle環境の2枚のGPU(T4×2)とCPUマルチコアを無駄なく使い切るため、**CPUでの古典的DoG処理(`dog_route.py`, `dog_nodes.py`)をバックグラウンドスレッド付きサブプロセス(`launch`)として非同期起動し、その裏でGPUによる3D Net検出(`detect.py`)を並列実行する**構成をとっています。
 
