@@ -1,0 +1,32 @@
+# PyTorch CUDA 12.4 index
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# PyTorch (CUDA 12.4)
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+
+# Core Science & ML Packages
+numpy>=2.0.0
+scipy>=1.15.0
+pandas>=2.2.0
+scikit-image>=0.24.0
+lightgbm>=4.0.0
+catboost>=1.2.0
+
+# ILP & Tracking
+tracksdata>=0.1.0rc12
+pyscipopt>=5.0.0
+ilpy>=0.6.0
+polars>=1.36.0
+polars-runtime-32
+
+# Zarr Data Format & Compression
+zarr>=2.18.0
+numcodecs>=0.14.0
+blosc2>=4.0.0
+
+# Development & Notebook Utilities
+ipykernel>=6.29.0
+debugpy>=1.8.0
+tqdm>=4.66.0
+pyyaml>=6.0.0

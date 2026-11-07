@@ -64,9 +64,18 @@ DIV_COSTS, SPARSE_DIV_COSTS = "6,16,0.5", "5,16,0.5"      # ILP division cost ba
 FORK_THR = 0.25
 GATE_SPEC = "19.7:25:or:0.4:4:5;25:99:and:0.2:5:5"          # track gate bands lo:hi:mode:theta:r_dog:r_net64
 
-INPUT = Path(os.environ.get("BIOHUB_INPUT", "/kaggle/input"))
-WORK = Path(os.environ.get("BIOHUB_WORK", "/kaggle/working"))
-KEEP = os.environ.get("BIOHUB_KEEP", "0") == "1"           # keep intermediate files
+ROOT = Path(__file__).resolve().parent
+INPUT_CANDIDATES = [
+    Path(os.environ.get("BIOHUB_INPUT", "")) if os.environ.get("BIOHUB_INPUT") else None,
+    Path("/kaggle/input"),
+    ROOT / "input",
+    ROOT.parent / "input",
+    Path(r"c:\work\aaa\kgle_001_BCT_Episode\episode\input"),
+]
+INPUT = next((p for p in INPUT_CANDIDATES if p and p.exists()), Path("/kaggle/input"))
+WORK = Path(os.environ.get("BIOHUB_WORK", ROOT / "working" if not Path("/kaggle/working").exists() else "/kaggle/working"))
+WORK.mkdir(parents=True, exist_ok=True)
+KEEP = os.environ.get("BIOHUB_KEEP", "1" if not Path("/kaggle").exists() else "0") == "1"           # keep intermediate files
 
 
 def shallow(pattern):
@@ -74,8 +83,29 @@ def shallow(pattern):
     return sorted({p for d in ("*", "*/*", "*/*/*") for p in glob.glob(str(INPUT / d / pattern))})
 
 
-CODE = Path(os.environ.get("BIOHUB_CODE") or Path(shallow("net3d.py")[0]).parent)
-TEST = os.environ.get("BIOHUB_TEST") or next(p for p in shallow("test") if glob.glob(p + "/*.zarr"))
+code_candidates = [
+    Path(os.environ.get("BIOHUB_CODE", "")) if os.environ.get("BIOHUB_CODE") else None,
+    ROOT / "biohub-4th-place-artifacts",
+    Path("biohub-4th-place-artifacts"),
+    ROOT,
+]
+CODE = next((p for p in code_candidates if p and (p / "net3d.py").exists()), None)
+if CODE is None:
+    found = shallow("net3d.py")
+    CODE = Path(found[0]).parent if found else ROOT / "biohub-4th-place-artifacts"
+
+test_candidates = [
+    Path(os.environ.get("BIOHUB_TEST", "")) if os.environ.get("BIOHUB_TEST") else None,
+    ROOT / "input" / "test",
+    ROOT.parent / "input" / "test",
+    Path(r"c:\work\aaa\kgle_001_BCT_Episode\episode\input\test"),
+    INPUT / "test",
+]
+TEST = next((str(p) for p in test_candidates if p and p.exists() and list(p.glob("*.zarr"))), None)
+if TEST is None:
+    found_test = [p for p in shallow("test") if glob.glob(p + "/*.zarr")]
+    TEST = found_test[0] if found_test else str(INPUT / "test")
+
 MOVIES = sorted(p.name[:-5] for p in Path(TEST).iterdir() if p.name.endswith(".zarr"))
 print(f"code + models: {CODE}\ntest movies:   {TEST} ({len(MOVIES)})", flush=True)
 T0 = time.time()
@@ -84,7 +114,15 @@ T0 = time.time()
 # ## Offline packages
 
 # %%
-if os.environ.get("BIOHUB_SKIP_PIP", "0") != "1":
+skip_pip = os.environ.get("BIOHUB_SKIP_PIP")
+if skip_pip is None:
+    try:
+        import zarr, polars, tracksdata, pyscipopt, ilpy, lightgbm, catboost, blosc2
+        skip_pip = "1"
+    except ImportError:
+        skip_pip = "0"
+
+if skip_pip != "1":
     wheels = shallow("wheels")
     force = ("polars>=1.36", "polars-runtime-32")          # the image's polars is too old for tracksdata
     pkgs = ("numcodecs", "donfig", "typing_extensions", "packaging", "google-crc32c", "zarr", "pyarrow", "bidict", "psygnal", "rich",
@@ -129,7 +167,7 @@ def launch(cmd, gpu_index=None, tag=""):
     if gpu_index is not None:
         env["CUDA_VISIBLE_DEVICES"] = gpu(gpu_index)
     print(">> " + " ".join(cmd), flush=True)
-    p = subprocess.Popen(cmd, cwd=WORK, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    p = subprocess.Popen(cmd, cwd=WORK, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding="utf-8", errors="replace")
 
     def pump():
         for line in p.stdout:
