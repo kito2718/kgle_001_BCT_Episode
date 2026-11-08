@@ -59,16 +59,11 @@ https://www.kaggle.com/code/songqizhou/biohub-4th-place-solution
 https://www.kaggle.com/datasets/songqizhou/biohub-4th-place-artifacts
 
 ## biohub 4位解法まとめ
-4位解法は、全6Stageで構成されています。その特徴はざっくりと **「生物学をモデル化する(Model the biology)」** というアプローチと、ILP(整数線形計画法)内部に組み込まれた **「ノードごとの学習済み分裂コスト($6 - 16s_i$)」** です。
+4位解法の特徴はざっくりと 
+- **「生物学をモデル化する(Model the biology)」** というアプローチ
+- ILP(整数線形計画法)内部に組み込まれた **「ノードごとの学習済み分裂コスト($6 - 16s_i$)」**
 
-- **Stage0**. Main(CPU処理とGPU並列実行)
-- **Stage1**. 密度ルーター(DoG Router)と 3D Net 細胞検出(Cell Detection)
-- **Stage2**. 候補リンク構築とマルチモーダル特徴量・LightGBMエッジモデル(Linking)
-- **Stage3**. 細胞分裂の事前確率モデル(Division Prior: 3段階ハイブリッド構成)
-- **Stage4**. ノード別分裂コスト付き大域的ILPと動き補償平滑化(ILP & Smoothing)
-- **Stage5**. 原画像トレースによる分岐検証(Fork Verifier)とギャップ補間(Gap Filling)
-- **Stage6**. 疎な動画向けのトラック支持ゲート(Track-Support Gate)
-
+です。
 
 ### 「生物学と評価指標の観察」からの観点
 
@@ -158,21 +153,15 @@ https://www.kaggle.com/datasets/songqizhou/biohub-4th-place-artifacts
 
 ## 4位解法の全体像
 
-4位解法は、下記6段階のパイプラインで構成されています。
+4位解法は、全6Stageで構成されています。
+- **Stage0**. Main(CPU処理とGPU並列実行)
+- **Stage1**. 密度ルーター(DoG Router)と 3D Net 細胞検出(Cell Detection) + 疑似ラベル合意洗練
+- **Stage2**. 候補リンク構築とマルチモーダル特徴量(幾何・Transformer・対照学習埋め込み)のLightGBMエッジモデル(Linking)
+- **Stage3**. 細胞分裂(CNN・グラフ・母娘ペアの3段階分裂)の事前確率モデル$s_i$ (Division Prior: 3段階ハイブリッド構成)
+- **Stage4**. ノード別分裂コスト付き大域的ILPと動き補償平滑化(ILP & Smoothing)
+- **Stage5**. 原画像トレースによる分岐検証(Fork Verifier)とギャップ補間(Gap Filling)
+- **Stage6**. 疎な動画向けのトラック支持ゲート(Track-Support Gate)
 
-Stage1.**DoG密度ルーティング & 3D Net移流検出 + 疑似ラベル合意洗練**
-↓
-Stage2.**候補リンク抽出 & 幾何・Transformer・対照学習埋め込みのLightGBM統合**
-↓
-Stage3.**CNN・グラフ・母娘ペアの3段階分裂事前確率 $s_i$**
-↓
-Stage4.**ノード別分裂コスト付きILP & 動き補償直線平滑化**
-↓
-Stage5.**原画像トレース分岐検証 & ギャップ補間**
-↓
-Stage6.**疎動画向けトラック支持ゲート**
-↓
-提出ファイル(submission.csv)生成
 
 ```mermaid
 flowchart TD
