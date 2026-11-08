@@ -158,7 +158,21 @@ https://www.kaggle.com/datasets/songqizhou/biohub-4th-place-artifacts
 
 ## 4位解法の全体像
 
-4位解法は、**「DoG密度ルーティング & 3D Net移流検出 + 疑似ラベル合意洗練(Stage1)」→「候補リンク抽出 & 幾何・Transformer・対照学習埋め込みのLightGBM統合(Stage2)」→「CNN・グラフ・母娘ペアの3段階分裂事前確率 $s_i$(Stage3)」→「ノード別分裂コスト付きILP & 動き補償直線平滑化(Stage4)」→「原画像トレース分岐検証 & ギャップ補間(Stage5)」→「疎動画向けトラック支持ゲート(Stage6)」** の6段階パイプラインで構成されています。
+4位解法は、下記6段階のパイプラインで構成されています。
+
+Stage1.**DoG密度ルーティング & 3D Net移流検出 + 疑似ラベル合意洗練**
+↓
+Stage2.**候補リンク抽出 & 幾何・Transformer・対照学習埋め込みのLightGBM統合**
+↓
+Stage3.**CNN・グラフ・母娘ペアの3段階分裂事前確率 $s_i$**
+↓
+Stage4.**ノード別分裂コスト付きILP & 動き補償直線平滑化**
+↓
+Stage5.**原画像トレース分岐検証 & ギャップ補間**
+↓
+Stage6.**疎動画向けトラック支持ゲート**
+↓
+提出ファイル(submission.csv)生成
 
 ```mermaid
 flowchart TD
