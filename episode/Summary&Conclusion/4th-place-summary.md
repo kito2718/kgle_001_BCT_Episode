@@ -211,89 +211,38 @@ flowchart TD
 
 ### Stage0. Main(CPU処理とGPU並列実行)
 
-ノートブック本体(`biohub-4th-place-solution.py`)は、Kaggle環境の2枚のGPU(T4×2)とCPUマルチコアを無駄なく使い切るため、**CPUでの古典的DoG処理(`dog_route.py`, `dog_nodes.py`)をバックグラウンドスレッド付きサブプロセス(`launch`)として非同期起動し、その裏でGPUによる3D Net検出(`detect.py`)を並列実行する**構成をとっています。
+ノートブック本体(`biohub-4th-place-solution.py`)は、Kaggle環境の2枚のGPU(T4×2)とCPUマルチコアを無駄なく使い切るため、**CPUでの古典的DoG処理(`dog_route.py`, `dog_nodes.py`)をバックグラウンドスレッド付きサブプロセス(`launch`, L164-L177)として非同期起動し、その裏でGPU並列処理(`run_parallel`, L186-L188: 複数GPUで動画を分担)による3D Net検出(`detect.py`)を同時実行する**オーケストレーション構成をとっています。
 
-```mermaid
-flowchart TD
-    subgraph Stage1["Stage1: 密度ルーターと3D Net細胞検出 (CPU & GPU)"]
-        Raw["3D+t 画像ボリューム (100×64×256×256)"] --> DoGRoute["DoG密度ルーター (dog_route.py)<br/>動画ごとの平均核間隔 dog_sp を推定"]
-        Raw --> DoGNodes["高感度DoG検出 (dog_nodes.py)<br/>※疎動画(>=19.7µm)のみ rel=0.01 でバックグラウンド実行"]
-        Raw --> Net128["メイン検出器: 3D Net-128 (GT学習)<br/>+ 洗練器: 3D Net-128-PL (GT+疑似ラベル)"]
-        DoGRoute -->|"密 (<19.7µm): thr=0.97<br/>疎 (>=19.7µm): thr=0.99 で再検出"| Net128
-        Net128 --> Advect["Cellpose型40ステップ移流 & 適応NMS (4µm / 7µm)<br/>+ PLトラック合意フィルタ (6µm内一致率>=50%)"]
-        DoGRoute -->|"疎動画のみ独立検証用"| Net64["低解像度検出器: 3D Net-64 (thr=0.99)"]
-    end
+#### Stage0. フローチャート
 
-    subgraph Stage2["Stage2: 候補リンク構築とLightGBMエッジモデル (GPU & CPU)"]
-        Advect --> Cand["ノードテーブル化 & 候補リンク抽出 (candidates.py)<br/>半径10µm以内 + 順方向Top-5 + 逆方向Top-3"]
-        Cand --> Geom["幾何・速度残差・組織フロー残差 (edge_features.py: 26特徴量)"]
-        Cand & Raw --> TF["Edge Transformer (tf_edges.py)<br/>双方向Cross-Attention確率 (fwd, rev, harm) [+0.005]"]
-        Cand & Raw --> Emb["対照学習 3D CNN (cell_embedding.py)<br/>16×32×32パッチ埋め込み & コサイン類似度"]
-        Geom & TF & Emb --> EdgeLGBM["LightGBM エッジモデル (edge_model.py: 計47特徴量)<br/>統合リンク確率 p_ij を出力"]
-    end
+$$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初期化 \& 並列処理起動} \\ &\text{\small \texttt{biohub-4th-place-solution.py(L58-L189)}} \end{aligned} } \\
+\downarrow \\
+\boxed{ \begin{aligned} &\textbf{Stage1. DoG密度ルーティング \& 3D Net移流検出 + 疑似ラベル合意洗練} \\ &\text{\small ・呼び元: \texttt{biohub-4th-place-solution.py(L191-L211)}} \\ &\text{\small ・CPU非同期: \texttt{dog\_route.py(L20-L35)}, \texttt{dog\_nodes.py(L27-L53)}} \\ &\text{\small ・GPU並列: \texttt{detect.py(L245-L324)}, \texttt{net3d.py(L26-L132)}} \end{aligned} } \\
+\downarrow \\
+\boxed{ \begin{aligned} &\textbf{Stage2. 候補リンク抽出 \& 幾何・Transformer・対照学習埋め込みのLightGBM統合} \\ &\text{\small ・呼び元: \texttt{biohub-4th-place-solution.py(L217-L218)} $\rightarrow$ \texttt{downstream.py(L35-L42)}} \\ &\text{\small ・実行: \texttt{nodes\_table.py(L14-L34)} $\rightarrow$ \texttt{candidates.py(L13-L35)} $\rightarrow$ \texttt{edge\_features.py(L15-L74)}} \\ &\text{\small \quad $\rightarrow$ \texttt{tf\_edges.py(L18-L75)} $\rightarrow$ \texttt{cell\_embedding.py(L20-L74)} $\rightarrow$ \texttt{edge\_model.py(L15-L42)}} \end{aligned} } \\
+\downarrow \\
+\boxed{ \begin{aligned} &\textbf{Stage3. CNN・グラフ・母娘ペアの3段階分裂事前確率 } s_i \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L45-L69)}} \\ &\text{\small ・実行: \texttt{division\_cnn.py(L46-L103)} $\rightarrow$ \texttt{division\_cat.py(L14-L34)} $\rightarrow$ \texttt{division\_pair.py(L219-L315)}} \end{aligned} } \\
+\downarrow \\
+\boxed{ \begin{aligned} &\textbf{Stage4. ノード別分裂コスト付きILP \& 動き補償直線平滑化} \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L73-L74)}} \\ &\text{\small ・実行: \texttt{ilp\_solve.py(L27-L135)}, \texttt{common.py(L110-L157)}} \end{aligned} } \\
+\downarrow \\
+\boxed{ \begin{aligned} &\textbf{Stage5. 原画像トレース分岐検証 \& ギャップ補間} \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L75-L80)}} \\ &\text{\small ・実行: \texttt{fork\_verify.py(L238-L329)} $\rightarrow$ \texttt{gapfill.py(L16-L93)}} \end{aligned} } \\
+\downarrow \\
+\boxed{ \begin{aligned} &\textbf{Stage6. 疎動画向けトラック支持ゲート} \\ &\text{\small ・呼び出し元: \texttt{biohub-4th-place-solution.py(L225-L228)}} \\ &\text{\small ・実行: \texttt{track\_gate.py(L124-L209)}} \end{aligned} } \\
+\downarrow \\
+\boxed{ \begin{aligned} &\textbf{提出ファイル(submission.csv)生成 \& 最終検証} \\ &\text{\small \texttt{biohub-4th-place-solution.py(L230-L241)}} \end{aligned} } \end{gathered}$$
 
-    subgraph Stage3["Stage3: 3段階の細胞分裂事前確率 s_i (GPU & CPU)"]
-        EdgeLGBM & Raw --> DivCNN["① Division CNN (division_cnn.py)<br/>5フレーム(9×33×33) × 6モデル × 4 flip TTA"]
-        DivCNN & EdgeLGBM --> DivCat["② グラフ分裂モデル (division_cat.py)<br/>53特徴量 (リンク競合・姉妹角度・密度変化・CNN) → CatBoost"]
-        DivCat & Emb & TF & Raw --> DivPair["③ 母娘ペア分裂モデル (division_pair.py)<br/>三つ組候補 × 261特徴量 (母7f/娘3fの174画像特徴等) → LGB+Cat"]
-        DivPair --> DivPrior["最終分裂事前確率 s_i = max(pair_score, cat_score) [+0.003]"]
-    end
 
-    subgraph Stage4["Stage4: ノード別分裂コスト付き大域的ILPと平滑化 (CPU)"]
-        EdgeLGBM & TF & DivPrior & DoGRoute --> ILP["tracksdata + SCIP 大域的ILP (ilp_solve.py)<br/>・有効閾値緩和: max(0.3 - 0.5*s_i, 0)<br/>・第2娘救済: s_i>=0.2 で max(p, tf_harm)<br/>・個別分裂コスト: base - 16*s_i (密:6, 疎:5) [+0.035]"]
-        ILP --> Smooth["短トラック(孤立点)除去 & 動き補償直線平滑化<br/>組織ドリフト除去 + ±3フレーム局所直線フィット"]
-    end
-
-    subgraph Stage5["Stage5: 原画像トレース分岐検証とギャップ補間 (CPU)"]
-        Smooth & Raw --> ForkVer["分岐検証器 Fork Verifier (fork_verify.py)<br/>t-3..t+5の9フレーム原画像DoG追跡 (157特徴量)<br/>CatBoost×2較正平均 < 0.25 の弱い娘枝を切断 [+0.005]"]
-        ForkVer --> GapFill["ギャップ補間 (gapfill.py)<br/>1〜2フレーム欠損を距離4(k+1)µm以内で線形補間 (衝突回避付き) [+0.002]"]
-    end
-
-    subgraph Stage6["Stage6: 疎動画向けトラック支持ゲート (CPU)"]
-        GapFill & DoGRoute & DoGNodes & Net64 --> Gate["Track-Support Gate (track_gate.py)<br/>疎動画の非分岐セグメントを独立検出器(DoG & Net64)で検証<br/>支持率不足の偽トラックを削除"]
-        Gate --> FinalCSV["最終提出ファイル (submission.csv)"]
-    end
-```
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Main as biohub-4th-place-solution.py<br/>(メインオーケストレーター)
-    participant DogR as dog_route.py<br/>[CPU非同期] (密度ルーター)
-    participant DogN as dog_nodes.py<br/>[CPU非同期] (高感度DoG検出)
-    participant Det as detect.py<br/>[GPU並列] (3D Net検出)
-    participant DS as downstream.py<br/>(Stage2〜5 統合ドライバー)
-    participant Gate as track_gate.py<br/>(Stage6 トラック支持ゲート)
-
-    Main->>DogR: launch("dog_route.py --procs 2") (L191: CPUバックグラウンド起動)
-    Main->>DogN: launch("dog_nodes.py --min-sp 19.7 --rel 0.01") (L192: dog_route完了を待機して走る)
-    
-    par CPUでDoGが走る裏で、GPUごとにシャード分割して全動画を初回検出 (thr=0.97)
-        Main->>Det: run_parallel("detect.py --vec net3d_128.pt --refine-with net3d_128_pl.pt --thr 0.97") (L198)
-        Det-->>Main: 全4動画の初期ノード(nodes/*.nodes.npy, *.scores.npy)出力
-    and CPUでの密度ルーティング
-        DogR-->>Main: finish(dog_route) (L200: working/dog_route.json 完了)
-    end
-
-    Note over Main: dog_sp >= 19.7 µm の動画を sparse リストとして抽出 (L201-L205)<br/>※テスト4動画では 6bba_05b6850b (26.05 µm) のみが sparse と判定
-
-    opt sparse動画が存在する場合 (L206-L210)
-        Main->>Det: run_parallel("detect.py ... --thr 0.99 --movies sparse") (L207: 厳格閾値0.99で再検出し上書き)
-        Det-->>Main: sparse動画の nodes/*.nodes.npy を更新
-        Main->>Det: run_parallel("detect.py --vec net3d_64.pt --thr 0.99 --movies sparse") (L209: 独立検証用)
-        Det-->>Main: working/net64_nodes/*.nodes.npy 出力
-    end
-
-    Main->>DS: finish(launch("downstream.py --nodes ... --out submission.csv")) (L217)
-    Note over DS: Stage2(リンク特徴・LightGBM) → Stage3(分裂CNN・CatBoost・ペアモデル)<br/>→ Stage4(ILP・平滑化) → Stage5(分岐検証・ギャップ補間) を順次実行
-    DS-->>Main: working/submission.csv (ゲート前) 出力完了
-
-    Main->>DogN: finish(dog_nodes) (L225: 高感度DoG検出の完了を確認)
-    opt sparse動画が存在する場合 (L226-L228)
-        Main->>Gate: finish(launch("track_gate.py --sub submission.csv ...")) (L227)
-        Gate-->>Main: 独立検出器の支持率が低い偽トラックを除去し submission.csv を更新
-    end
-```
+#### Stage0. ソースコード一覧
+| ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
+| :--- | :--- | :---: | :--- |
+| `biohub-4th-place-solution.py` | `THR_DENSE`, `THR_SPARSE`, `SPARSE_UM`, `DIV_COSTS`, `FORK_THR`, `GATE_SPEC` 等 | L58-L65 | パイプライン全体を制御する閾値・ILP分裂コスト・ゲート仕様定数の定義 |
+| `biohub-4th-place-solution.py` | `shallow()`, パス解決(`INPUT`, `WORK`, `CODE`, `TEST`, `MOVIES`) | L67-L111 | Kaggle環境とローカル環境の両方に対応する入力・作業・コードパスの自動解決 |
+| `biohub-4th-place-solution.py` | オフラインパッケージ導入ブロック | L117-L143 | `polars>=1.36`, `zarr`, `tracksdata`, `pyscipopt`, `ilpy`, `catboost` 等のオフラインWheelインストールと検証 |
+| `biohub-4th-place-solution.py` | `gpu()`, `py()`, `launch()`, `finish()`, `run_parallel()` | L152-L189 | サブプロセスの非同期起動(標準出力中継スレッド付き)、完了待機、複数GPUによる並列実行ヘルパー |
+| `biohub-4th-place-solution.py` | Stage1 オーケストレーション部 | L191-L211 | CPUでの `dog_route.py` / `dog_nodes.py` 非同期起動と、GPUでの `detect.py` 初回検出・疎動画再検出の並列制御 |
+| `biohub-4th-place-solution.py` | Stage2〜5 オーケストレーション部 | L217-L219 | `downstream.py` を起動し、リンク予測・分裂事前確率・ILP・分岐検証・ギャップ補間を一括実行 |
+| `downstream.py` | `run()`, Stage2〜5 統合ドライバー | L29-L80 | Stage2(L35-L42)、Stage3(L45-L69: 分裂CNNのGPU負荷分散含む)、Stage4(L73-L74)、Stage5(L75-L80)を順次呼び出し |
+| `biohub-4th-place-solution.py` | Stage6 オーケストレーション & 最終検証部 | L225-L241 | `dog_nodes` 完了待機、疎動画に対する `track_gate.py` 実行、`submission.csv` の整合性検証と一時ファイル削除 |
 
 ---
 
