@@ -162,44 +162,44 @@ https://www.kaggle.com/datasets/songqizhou/biohub-4th-place-artifacts
 
 ```mermaid
 flowchart TD
-    subgraph Stage1["Stage1: 密度ルーターと3D Net細胞検出 (CPU & GPU)"]
-        Raw["3D+t 画像ボリューム (100×64×256×256)"] --> DoGRoute["DoG密度ルーター (dog_route.py)<br/>動画ごとの平均核間隔 dog_sp を推定"]
-        Raw --> DoGNodes["高感度DoG検出 (dog_nodes.py)<br/>※疎動画(>=19.7µm)のみ rel=0.01 でバックグラウンド実行"]
-        Raw --> Net128["メイン検出器: 3D Net-128 (GT学習)<br/>+ 洗練器: 3D Net-128-PL (GT+疑似ラベル)"]
-        DoGRoute -->|"密 (<19.7µm): thr=0.97<br/>疎 (>=19.7µm): thr=0.99 で再検出"| Net128
-        Net128 --> Advect["Cellpose型40ステップ移流 & 適応NMS (4µm / 7µm)<br/>+ PLトラック合意フィルタ (6µm内一致率>=50%)"]
-        DoGRoute -->|"疎動画のみ独立検証用"| Net64["低解像度検出器: 3D Net-64 (thr=0.99)"]
+    Input["入力: 3D+t 顕微鏡動画ボリューム"] --> S1
+
+    subgraph S1["Stage1: 細胞検出(Detection)"]
+        direction LR
+        R["DoG密度ルーター<br/>(動画の疎密判定)"] --> D["3D Net 移流検出<br/>+ 疑似ラベル合意フィルタ"]
     end
 
-    subgraph Stage2["Stage2: 候補リンク構築とLightGBMエッジモデル (GPU & CPU)"]
-        Advect --> Cand["ノードテーブル化 & 候補リンク抽出 (candidates.py)<br/>半径10µm以内 + 順方向Top-5 + 逆方向Top-3"]
-        Cand --> Geom["幾何・速度残差・組織フロー残差 (edge_features.py: 26特徴量)"]
-        Cand & Raw --> TF["Edge Transformer (tf_edges.py)<br/>双方向Cross-Attention確率 (fwd, rev, harm) [+0.005]"]
-        Cand & Raw --> Emb["対照学習 3D CNN (cell_embedding.py)<br/>16×32×32パッチ埋め込み & コサイン類似度"]
-        Geom & TF & Emb --> EdgeLGBM["LightGBM エッジモデル (edge_model.py: 計47特徴量)<br/>統合リンク確率 p_ij を出力"]
+    S1 -->|"検出された細胞核ノード"| S2
+
+    subgraph S2["Stage2: フレーム間リンク予測(Linking)"]
+        L["候補ペア抽出 + マルチモーダル特徴量<br/>(幾何・Edge Transformer・対照学習CNN)<br/>→ LightGBMでリンク確率 p_ij を予測"]
     end
 
-    subgraph Stage3["Stage3: 3段階の細胞分裂事前確率 s_i (GPU & CPU)"]
-        EdgeLGBM & Raw --> DivCNN["① Division CNN (division_cnn.py)<br/>5フレーム(9×33×33) × 6モデル × 4 flip TTA"]
-        DivCNN & EdgeLGBM --> DivCat["② グラフ分裂モデル (division_cat.py)<br/>53特徴量 (リンク競合・姉妹角度・密度変化・CNN) → CatBoost"]
-        DivCat & Emb & TF & Raw --> DivPair["③ 母娘ペア分裂モデル (division_pair.py)<br/>三つ組候補 × 261特徴量 (母7f/娘3fの174画像特徴等) → LGB+Cat"]
-        DivPair --> DivPrior["最終分裂事前確率 s_i = max(pair_score, cat_score) [+0.003]"]
+    S2 -->|"候補グラフ & リンク確率"| S3
+
+    subgraph S3["Stage3: 細胞分裂の事前確率予測(Division Prior)"]
+        Div["3段階ハイブリッド判定<br/>(①分裂3D CNN → ②グラフCatBoost → ③母娘ペアモデル)<br/>→ 各細胞の分裂確率 s_i を算出"]
     end
 
-    subgraph Stage4["Stage4: ノード別分裂コスト付き大域的ILPと平滑化 (CPU)"]
-        EdgeLGBM & TF & DivPrior & DoGRoute --> ILP["tracksdata + SCIP 大域的ILP (ilp_solve.py)<br/>・有効閾値緩和: max(0.3 - 0.5*s_i, 0)<br/>・第2娘救済: s_i>=0.2 で max(p, tf_harm)<br/>・個別分裂コスト: base - 16*s_i (密:6, 疎:5) [+0.035]"]
-        ILP --> Smooth["短トラック(孤立点)除去 & 動き補償直線平滑化<br/>組織ドリフト除去 + ±3フレーム局所直線フィット"]
+    S2 & S3 -->|"リンク確率 p_ij & 分裂確率 s_i"| S4
+
+    subgraph S4["Stage4: 大域的最適化と軌道平滑化(Global Optimization)"]
+        ILP["ノード別分裂コスト(base - 16s_i)付き大域的ILP<br/>+ 組織ドリフト除去・直線フィット平滑化"]
     end
 
-    subgraph Stage5["Stage5: 原画像トレース分岐検証とギャップ補間 (CPU)"]
-        Smooth & Raw --> ForkVer["分岐検証器 Fork Verifier (fork_verify.py)<br/>t-3..t+5の9フレーム原画像DoG追跡 (157特徴量)<br/>CatBoost×2較正平均 < 0.25 の弱い娘枝を切断 [+0.005]"]
-        ForkVer --> GapFill["ギャップ補間 (gapfill.py)<br/>1〜2フレーム欠損を距離4(k+1)µm以内で線形補間 (衝突回避付き) [+0.002]"]
+    S4 -->|"初期トラッキング木"| S5
+
+    subgraph S5["Stage5: トラック補正・検証(Post-Processing)"]
+        PP["Fork Verifier(原画像DoG追跡による偽分裂枝の切断)<br/>+ Gap Filling(1〜2フレームの欠損補間)"]
     end
 
-    subgraph Stage6["Stage6: 疎動画向けトラック支持ゲート (CPU)"]
-        GapFill & DoGRoute & DoGNodes & Net64 --> Gate["Track-Support Gate (track_gate.py)<br/>疎動画の非分岐セグメントを独立検出器(DoG & Net64)で検証<br/>支持率不足の偽トラックを削除"]
-        Gate --> FinalCSV["最終提出ファイル (submission.csv)"]
+    S5 -->|"補正済みトラック"| S6
+
+    subgraph S6["Stage6: 最終品質ゲート(Quality Gate)"]
+        Gate["Track-Support Gate<br/>(疎動画のみ独立検出器と照合し偽トラックを除去)"]
     end
+
+    S6 --> Output["出力: 最終提出ファイル(submission.csv)"]
 ```
 
 ---
