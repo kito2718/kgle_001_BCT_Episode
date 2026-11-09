@@ -248,7 +248,7 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初�
 
 ### ◆Stage1. 密度ルーター(DoG Router)と 3D Net 細胞検出(Cell Detection)
 
-#### 1-1. 検出器から独立した DoG 密度ルーター (`dog_route.py`, `dog_tracker.py`)
+#### 1-1. 3D Net検出器とは別の DoG 密度ルーター (`dog_route.py`, `dog_tracker.py`)
 胚(Embryo)によって細胞の大きさと密集度は大きく異なります。初期バージョンでは「3D Net自身の検出ノード数」を使って疎密を判定していましたが、未知の胚に対してニューラルネットの検出数はドリフト(変動)しやすく、「振り分けられるモデル自身の出力でルーターの閾値を決めるべきではない」という教訓から、**学習を一切含まない古典的DoG(Difference of Gaussians)トラッカー**によるルーターが導入されました(Public LB +0.002)。
 
 * **DoG検出 (`dog_tracker.py::detect_blobs()`, L101-L159)**:
@@ -262,7 +262,7 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初�
   - この `dog_sp` が **`19.7 µm` 以上** の動画を **疎(sparse)**、未満を **密(dense)** と判定します。
 
 #### 1-2. Dual-Encoder 3D Net と Cellpose型移流デコーディング (`net3d.py`, `detect.py`)
-1位〜3位解法が「細胞中心のガウシアンヒートマップ」を予測してMax Pooling NMSでピークを抜いていたのに対し、4位解法は **「密集して接触した2つの核を分離するため、各ボクセルから核中心へ向かう3D単位ベクトル場を予測する(Cellpose方式)」** という独自のアプローチを採用しています。
+1位〜3位解法が「細胞中心のガウシアンヒートマップ」を予測してMax Pooling NMS(Non-Maximum Suppression:非最大値抑制)でピークを抜いていたのに対し、4位解法は **「密集して接触した2つの核を分離するため、各ボクセルから核中心へ向かう3D単位ベクトル場を予測する(Cellpose方式)」** という独自のアプローチを採用しています。
 
 * **Dual-Encoder + ChangeGate + Self-Attention Mixer (`net3d.py`, L26-L124)**:
   - 入力は連続する3フレーム `[t-1, t, t+1]`(XY方向に1/2プーリングされた `64×128×128` グリッド、50〜99.5パーセンタイルで正規化し `[-0.5, 6.0]` にクリップ)。
@@ -301,19 +301,44 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初�
 sequenceDiagram
     autonumber
     participant Orch as biohub-4th-place-solution.py<br/>(L191-L211)
-    participant DogR as dog_route.py &<br/>dog_tracker.py
+    participant DogRt as dog_route.py
+    participant DogNd as dog_nodes.py
+    participant DogTk as dog_tracker.py
     participant Det as detect.py<br/>main() & detect_movie()
     participant Net as net3d.py<br/>Net3D (128 / 128_pl / 64)
     participant Adv as detect.py<br/>advect_decode() & nms()
 
     par CPUバックグラウンド: DoG密度ルーター
-        Orch->>DogR: dog_route.py --test TEST --out dog_route.json
-        loop 各動画 name (Pool並列)
-            DogR->>DogR: detect_blobs(dog_scales=[[1.5,4.0],[2.2,5.5]], rel=0.045) (L101-L159)
-            DogR->>DogR: refine_centroids() & link_frames(8µm) & close_gaps(1f) (L171-L391)
-            DogR->>DogR: movie_spacing_um(): (体積 / フレーム平均ノード数)^(1/3) (L397-L404)
+        Orch->>DogRt: dog_route.py起動 L191
+        Orch->>DogNd: dog_nodes.py起動 L192
+        DogNd->>DogNd: load_route()<br/>dog_route.json出力待ち
+        par 各動画(name)並列処理
+            DogRt->>DogRt: one(name) L20-L24
+            rect rgb(240, 245, 255)
+                Note over DogRt, DogTk: 目的:平均核間隔[μm]を保存
+                DogRt->>DogTk: track_movie() L378-394
+                DogTk->>DogTk: detect_blobs() L101-L159
+                DogTk->>DogTk: refine_centroids() L171-L193
+                DogTk->>DogTk: link_frames() L195-L267
+                DogTk->>DogTk: close_gaps() L269-L338
+                DogTk-->>DogRt: res: TrackGraph = <br/>node_t: np.ndarray(N(int),)<br/>node_z:np.ndarray(N(int),)<br/>node_y:np.ndarray(N(int),)<br/>node_x:np.ndarray(N(int),)<br/>node_ids:np.ndarray(N(SeqNo),)<br/>edges: np.ndarray(E, 2(pair))
+            end
         end
-        DogR-->>Orch: dog_route.json ({movie: {dog_sp, dog_nodes}})
+        DogRt->>DogTk: movie_spacing_um()(L397-L404)
+        DogRt->>DogRt: dog_route.json保存<br/>({44b6_0113de3b: {16.9478, 15753}})<br/>↑のretを参照
+
+        Note over DogNd: dog_route.json保存された。
+        DogNd->>DogNd: 再開
+            rect rgb(245, 255, 245)
+                Note over DogNd, DogTk: 目的:細胞中心座標を保存
+                DogNd->>DogTk: track_movie() L378-394
+                DogTk->>DogTk: detect_blobs() L101-L159
+                DogTk->>DogTk: refine_centroids() L171-L193
+                DogTk->>DogTk: link_frames() L195-L267
+                DogTk->>DogTk: close_gaps() L269-L338
+                DogTk-->>DogRt: res: TrackGraph = <br/>node_t: np.ndarray(N(int),)<br/>node_z:np.ndarray(N(int),)<br/>node_y:np.ndarray(N(int),)<br/>node_x:np.ndarray(N(int),)<br/>node_ids:np.ndarray(N(SeqNo),)<br/>edges: np.ndarray(E, 2(pair))
+            end
+
     and GPU並列: 3D Net 初回検出 (thr=0.97)
         Orch->>Det: detect.py --vec net3d_128.pt --refine-with net3d_128_pl.pt --thr 0.97
         Det->>Net: load_net3d(net3d_128.pt) & load_net3d(net3d_128_pl.pt) (L258-L261)
