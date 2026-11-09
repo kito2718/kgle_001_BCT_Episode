@@ -141,7 +141,7 @@ https://www.kaggle.com/datasets/songqizhou/biohub-4th-place-artifacts
 
 | カテゴリ | 使用Stage | モデル名・重みファイル | アーキテクチャ / 規模 | 役割・機能 |
 | :--- | :---: | :--- | :--- | :--- |
-| **Router (密度判定)** | **Stage1**<br>(結果利用: Stage4, 6) | `dog_route.py`<br>`dog_nodes.py` | マルチスケール3D DoG + ハンガリアン追跡 (CPU) | **動画別の核間隔(密度)推定と高感度サポート検出:** 検出器に依存せず各動画の平均核間隔(`dog_sp`)を算出。`19.7 µm` 以上を「疎(sparse)」と判定し、Stage1の検出閾値・Stage4のILPコスト・Stage6の最終ゲートを制御。 |
+| **Router (密度判定)** | **Stage1**<br>(結果利用: Stage4, 6) | `dog_route.py`<br>`dog_nodes.py` | 3D DoG検出 + ハンガリアン追跡 (CPU) | **動画別の核間隔(密度)推定と高感度サポート検出:** 検出器に依存せず各動画の平均核間隔(`dog_sp`)を算出。`19.7 µm` 以上を「疎(sparse)」と判定し、Stage1の検出閾値・Stage4のILPコスト・Stage6の最終ゲートを制御。 |
 | **Detection (細胞検出)** | **Stage1**<br>(`net3d_64`利用: Stage6) | `net3d_128.pt`<br>`net3d_128_pl.pt`<br>`net3d_64.pt` | Dual-Encoder 3D U-Net + ChangeGate + MixerBlock (各18M params) | **細胞確率と中心向き単位ベクトル場の同時予測:** 現在フレームと前後フレーム差分の2系統入力。移流(Advection)と適応NMSで核を抽出し、GTモデルと疑似ラベル(PL)モデルの合意により欠損補完と偽陽性抑制を両立(`net3d_64.pt`はStage6の独立検証用)。 |
 | **Link Evidence (リンク特徴)** | **Stage2**<br>(特徴利用: Stage3, 4) | `edge_transformer/weights.pth`<br>`cell_embedding.pt` | Temporal 3D U-Net + Cross-Attention (2.1M params)<br>InfoNCE 4層3D CNN (0.24M params) | **深層リンク確率と外見類似度:** 連続2フレーム間の全ノードペアを双方向Cross-Attentionで採点(`fwd, rev, harm`)。さらに `16×32×32` 生パッチの対照学習埋め込みのコサイン類似度を算出(Stage3のペア特徴やStage4の第2娘救済でも利用)。 |
 | **Link Model (エッジ統合)** | **Stage2**<br>(確率利用: Stage3, 4) | `edge_lgbm/model.txt` | LightGBM (CPU, 47特徴量) | **候補リンク確率 $p_{ij}$ の統合予測:** 幾何・運動残差・組織フロー残差(26特徴)とTransformer確率・埋め込み類似度および候補内ランク/ギャップ(21特徴)を統合し、単一のリンク確率 $p_{ij}$ へ変換(Stage3のグラフ特徴・Stage4のILPへ入力)。 |
@@ -209,7 +209,7 @@ flowchart TD
 
 ## パイプラインの詳細解説
 
-### Stage0. Main(CPU処理とGPU並列実行)
+### ◆Stage0. Main(CPU処理とGPU並列実行)
 
 ノートブック本体(`biohub-4th-place-solution.py`)は、Kaggle環境の2枚のGPU(T4×2)とCPUマルチコアを無駄なく使い切るため、**CPUでの古典的DoG処理(`dog_route.py`, `dog_nodes.py`)をバックグラウンドスレッド付きサブプロセス(`launch`, L164-L177)として非同期起動し、その裏でGPU並列処理(`run_parallel`, L186-L188: 複数GPUで動画を分担)による3D Net検出(`detect.py`)を同時実行する**オーケストレーション構成をとっています。
 
@@ -244,17 +244,17 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初�
 | `downstream.py` | `run()`, Stage2〜5 統合ドライバー | L29-L80 | Stage2(L35-L42)、Stage3(L45-L69: 分裂CNNのGPU負荷分散含む)、Stage4(L73-L74)、Stage5(L75-L80)を順次呼び出し |
 | `biohub-4th-place-solution.py` | Stage6 オーケストレーション & 最終検証部 | L225-L241 | `dog_nodes` 完了待機、疎動画に対する `track_gate.py` 実行、`submission.csv` の整合性検証と一時ファイル削除 |
 
----
+<br/><br/>
 
-### Stage1. 密度ルーター(DoG Router)と 3D Net 細胞検出(Cell Detection)
+### ◆Stage1. 密度ルーター(DoG Router)と 3D Net 細胞検出(Cell Detection)
 
 #### 1-1. 検出器から独立した DoG 密度ルーター (`dog_route.py`, `dog_tracker.py`)
 胚(Embryo)によって細胞の大きさと密集度は大きく異なります。初期バージョンでは「3D Net自身の検出ノード数」を使って疎密を判定していましたが、未知の胚に対してニューラルネットの検出数はドリフト(変動)しやすく、「振り分けられるモデル自身の出力でルーターの閾値を決めるべきではない」という教訓から、**学習を一切含まない古典的DoG(Difference of Gaussians)トラッカー**によるルーターが導入されました(Public LB +0.002)。
 
-* **マルチスケールDoGブロブ検出 (`detect_blobs`, L101-L159)**:
-  - XY平面を1/4に間引いたボリュームに対し、フレームごとに1.0〜99.7パーセンタイルで頑健な輝度正規化を実施(暗い細胞核も浮かび上がらせる)。
-  - 2つの物理スケールペア `dog_scales = [[1.5, 4.0], [2.2, 5.5]]` (µm) で3Dガウシアン差分応答 $G(\sigma_{\text{small}}) - G(\sigma_{\text{large}})$ を計算し、スケール間の最大値をとることで多様な核サイズに対応。
-  - 物理半径 `3.2 µm` の楕円体フットプリント(`_ball_footprint`)による3D極大値フィルタと相対閾値 `0.045` でピークを抽出し、元解像度の `(1, 3, 3)` 窓で輝度重み付き重心補正(`refine_centroids`)を実施。
+* **DoG検出 (`dog_tracker.py::detect_blobs()`, L101-L159)**:
+  - 1フレーム分の3D画像 `(Z=64, Y=256, X=256)` に対し、Y軸・X軸方向のみを1/4に間引いた3Dボリューム `ds = vf[:, ::4, ::4]` (`64×64×64`、Z・Y・Xすべてのボクセル間隔が `1.625 µm` で等方的になる)を作成し、フレームごとに1.0〜99.7パーセンタイルで輝度正規化を実施(暗い細胞核も浮かび上がらせる)。
+  - 大小2パターンのぼかし半径ペア `dog_scales = [[1.5, 4.0], [2.2, 5.5]]` (µm) で、3Dボリューム全体に対して3次元 `gaussian_filter` の差分 $G(\sigma_{\text{small}}) - G(\sigma_{\text{large}})$ を一括計算し、2パターンのうち大きい方の値をとることで大小の核サイズに対応。
+  - 物理半径 `3.2 µm` の球状フットプリント(`_ball_footprint`)による3D極大値フィルタ(`maximum_filter`)と相対閾値 `0.045` でピークを抽出し、元解像度の `(1, 3, 3)` 窓で輝度重み付き重心補正(`refine_centroids`)を実施。
 * **簡易トラッキングと平均核間隔 `dog_sp` の算出 (`track_movie`, `movie_spacing_um`, L378-L404)**:
   - 距離ゲート `8.0 µm` のハンガリアン法(`link_frames`)でフレーム間を接続し、1フレームのギャップ補間(`close_gaps`)と孤立点除去(`prune_isolated`)を行った後の総ノード数 $N_{\text{nodes}}$ を取得。
   - 検出された全細胞の座標範囲(1〜99パーセンタイルのバウンディングボックス体積 $V$)と1フレームあたりの平均細胞数 $N_{\text{frame}} = N_{\text{nodes}} / T$ から、以下の立方体格子近似式で**平均細胞核間隔 `dog_sp` (µm)** を算出します:
@@ -291,7 +291,7 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初�
 | `biohub-4th-place-solution.py` | `THR_DENSE`, `THR_SPARSE`, `SPARSE_UM`, `NMS_ADAPT`, `REFINE_R`, `REFINE_SUPPORT` | L58-L62 | シード閾値(`0.97`/`0.99`)、疎判定閾値(`19.7µm`)、適応NMS(`4,7,10`)、PL洗練半径(`6µm`)・支持率(`0.5`)の定義 |
 | `dog_route.py` | `one()`, `__main__` | L20-L35 | マルチプロセスで全動画に `dog_tracker.track_movie()` を実行し、`dog_route.json` に核間隔 `dog_sp` を保存 |
 | `dog_nodes.py` | `load_route()`, `dog_nodes()` | L27-L53 | `dog_route.json` 完了を待機し、`dog_sp >= 19.7µm` の疎動画のみ低閾値(`rel=0.01`)で高感度DoGノードを抽出 |
-| `dog_tracker.py` | `detect_blobs()`, `refine_centroids()`, `link_frames()`, `close_gaps()`, `movie_spacing_um()` | L101-L404 | マルチスケールDoG極大点抽出、重心補正、ハンガリアン接続、1フレーム補間、体積とノード数からの平均核間隔算出 |
+| `dog_tracker.py` | `detect_blobs()`, `refine_centroids()`, `link_frames()`, `close_gaps()`, `movie_spacing_um()` | L101-L404 | DoG検出(極大点抽出)、重心補正、ハンガリアン接続、1フレーム補間、体積とノード数からの平均核間隔算出 |
 | `net3d.py` | `Encoder`, `ChangeGate`, `MixerBlock`, `Body`, `FlowProbHead`, `Net3D`, `load_net3d()` | L26-L132 | 現在フレームと前後差分フレームのDual-Encoder、ChangeGate、Self-Attention Mixer、単位ベクトル場+確率ヘッドの定義 |
 | `detect.py` | `Movie`, `advect_decode()`, `nms()`, `detect_movie()` | L54-L178 | XYプーリングとパーセンタイル正規化、40ステップ移流と1µmシンククラスタリング、確率順Greedy距離NMS(`4µm`/`7µm`) |
 | `detect.py` | `match_one_to_one()`, `link_greedy()`, `main()` | L181-L324 | 適応NMS半径の決定、PLモデル(`net3d_128_pl.pt`)との6µm内1対1照合、Union-Findによる支持率50%以上のトラック抽出と `.nodes.npy` 保存 |
