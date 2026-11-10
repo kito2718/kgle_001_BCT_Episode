@@ -1,0 +1,21 @@
+{
+  "unet_out_channels": 32,
+  "unet_layers": [
+    32,
+    64,
+    128
+  ],
+  "downsample": [
+    1,
+    4,
+    4
+  ],
+  "volume_shape": [
+    64,
+    64,
+    64
+  ],
+  "window_size": 2,
+  "pool_kernel_um": 5.0,
+  "identity_dim": 16
+}

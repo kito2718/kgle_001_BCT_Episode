@@ -1,0 +1,56 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Biohub 5th Place: Main (ctdd-11model-final-v2-ilp1-rematch-adj-off.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/ctdd-11model-final-v2-ilp1-rematch-adj-off.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "subProcess": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/ctdd-final-v2-ilp1-rematch-adj-off-code;${workspaceFolder}/ctdd-final-v2-ilp1-rematch-adj-off-code/vendor/repo/src;${workspaceFolder}/ctdd-final-v2-ilp1-rematch-adj-off-code/vendor/repo/scripts"
+      }
+    },
+    {
+      "name": "Biohub 5th Place: Public Baseline (unet_baseline_inference.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/unet_baseline_inference.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "subProcess": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/cellmot-baseline-artifacts/cellmot-baseline-artifacts/repo/src;${workspaceFolder}/cellmot-baseline-artifacts/cellmot-baseline-artifacts/repo/scripts"
+      }
+    },
+    {
+      "name": "Python: Current File (5thPlace .venv)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/ctdd-final-v2-ilp1-rematch-adj-off-code;${workspaceFolder}/ctdd-final-v2-ilp1-rematch-adj-off-code/vendor/repo/src;${workspaceFolder}/ctdd-final-v2-ilp1-rematch-adj-off-code/vendor/repo/scripts"
+      }
+    },
+    {
+      "name": "Biohub 5th Place: Verify Local Env",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/verify_local_env.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    }
+  ]
+}

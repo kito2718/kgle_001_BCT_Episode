@@ -1,0 +1,27 @@
+{
+  "id": "hirotetsu/ctdd-11model-final-v2-ilp1-rematch-adj-off",
+  "id_no": 136332070,
+  "title": "ctdd-11model-final_v2-ilp1-rematch-adj-off",
+  "code_file": "ctdd-11model-final-v2-ilp1-rematch-adj-off.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [
+    "gpu"
+  ],
+  "dataset_sources": [
+    "hirotetsu/biohub-tracking-support-pack",
+    "hirotetsu/ctdd-final-v2-ilp1-rematch-adj-off-code",
+    "hirotetsu/ctdd-run53-run74-run79-ensemble-code"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "biohub-cell-tracking-during-development"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461",
+  "machine_shape": "NvidiaTeslaT4"
+}
