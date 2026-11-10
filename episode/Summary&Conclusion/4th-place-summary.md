@@ -732,7 +732,7 @@ sequenceDiagram
     participant Gate as track_gate.py<br/>(L24-L86)
 
     Main->>Main: finish(dog_nodes) (高感度DoG検出の完了を確認, L225)
-    Main->>Gate: track_gate.py --sub submission.csv --route dog_route.json --net64-dir net64_nodes --dog-dir dog_nodes --spec "19.7:25:or:0.4:4:5;25:99:and:0.2:5:5"
+    Main->>Gate: track_gate.py --sub submission.csv --route dog_route.json --net64-dir net64_nodes --dog-dir dog_nodes --spec "19.7:25:or:0.4:4:5；25:99:and:0.2:5:5"
     Gate->>Gate: dog_route.json から各動画の dog_sp を読込 & GATE_SPEC をパース (L24-L27, L62)
     loop 各動画 m (L64-L81)
         alt dog_sp < 19.7 µm (密動画)
@@ -804,7 +804,7 @@ Writeup(Section 6 & 7)で公開されている、各コンポーネントの追�
 | **3位** | **超・重厚なNN大軍団**<br>15個の検出TRT + FlowNet3D + Siamese Net + 40個の分裂TRT | **数理計画法 (Lineage LP/MILP)**<br>動画全体を `HiGHS` ソルバーで大域的に一括ジャッジ | Optical Flowによる座標微調整 + 3fギャップ補間 | **「最強のGPU特徴量 × 数理計画法(LP)の王道フル装備」** 型 |
 | **4位** | **軽量NN + 生物学的GBDT**<br>18M 3D Net + 261特徴量の母娘ペアLGB/CatBoost | **数理計画法 (個別コストILP)**<br>`tracksdata` + `SCIP` でノード別コスト($6-16s_i$)一括ジャッジ | **原画像9f再追跡(Fork Verifier)** + 動き補償平滑化 + **疎動画ゲート** | **「GPU資源の差を、生物学特徴量とILP設計・原画像再検品で埋めた」** 型 |
 
-### 比較すると見えてくる面白いポイント
+### 比較すると見えてくるポイント
 
 * **3位と4位は「設計図(アーキテクチャ)」が双子のように似ている**:
   どちらも「リンク確率と分裂確率を別々のモデルで作って、数理計画法(LP/ILP)で動画全体を一括ジャッジする」という全く同じ思想です。
