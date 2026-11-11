@@ -2,7 +2,7 @@
 <img src="image.png" width="800" />
 
 ## Abstract
-- biohub 5位解法(Tang / hirotetsuさん: 株式会社Rist所属のKaggle Master 唐 浩哲氏、ソロ参加で5位入賞 Public 0.971 / Private 0.958)のまとめ
+- biohub 5位解法(Tang/hirotetsuさん Public 0.971 / Private 0.958)のまとめ
   - 公開ベースライン(`thibautgoldsborough/unet-baseline-inference-submission`)の「Single-Backbone(3D Temporal U-Net + Node Transformer) + 大域的ILP」という骨格をベースに、その弱点を徹底的に洗い出して正統進化させた王道エンドツーエンド解法。
   - 1つの共有バックボーン(TemporalUNet3D)から細胞検出を行い、同じマルチスケール特徴マップからサンプリングした特徴量で **「リンク確率・16次元外見類似度(Identity)・新規出現スコア(Appearance)・細胞分裂スコア(Division)」の4要素** をNodeTransformer(v1/v2)で一括予測。
   - 4つの公開ZebraHubデータセットによる事前学習、8方向TTA(`8fixed`)×11モデルアンサンブル(`run53` 5-fold + `run74` 5-fold + `run79` fold0)、および **多段ILPトラッキング(ILP1〜ILP4: HiGHS局所厳密MILPソルバー) + 運動保存直線スムージング + 1フレーム欠損補間** で完結。
@@ -23,7 +23,7 @@ flowchart LR
         B2 --> B3["単一ステージILP<br/>(ノードコストなし・固定重み)<br/>+ 整数丸めCSV出力"]
     end
 
-    subgraph Fifth["5位解法 (Tang / hirotetsu氏)"]
+    subgraph Fifth["5位解法(Tang /hirotetsuさん)"]
         F1["3D Average Pooling縮小<br/>+ 対数放物線サブボクセル補正<br/>+ ZebraHub事前学習"] --> F2["TemporalUNet3D (ResBlock)<br/>+ NodeTransformer v1/v2<br/>(Edge + Identity + Appear + Div)"]
         F2 --> F3["8方向TTA × 11モデル融合<br/>+ 多段ILP(ILP1〜ILP4)<br/>+ 運動保存直線平滑化 & Float出力"]
     end
@@ -34,7 +34,7 @@ flowchart LR
 ## 概要
 先日、Biohub細胞トラッキングコンペが完了しました。
 Private LB 1353位/3800人と大変悔しい結果に終わりましたが、Kaggleの素晴らしいところは、トップ層の解法が公開されることです。
-このお宝を徹底的に解析し、確実に自身のスキルへと昇華させるべく、今回はソロ参加で5位(3,947チーム中5位・金メダル)に入賞された Tang(hirotetsu / 株式会社Rist所属の唐 浩哲)さんの解法を深掘りします。
+このお宝を徹底的に解析し、確実に自身のスキルへと昇華させるべく、今回はソロ参加で5位(3,947チーム中5位・金メダル)に入賞された (Tang/hirotetsu)さんの解法を深掘りします。
 
 1位〜4位の解法がそれぞれ独自の専用モジュール(1位のSoon Net、2位のカルマンフィルタ多段審査、3位のFlowNet3D+40個のTensorRT分裂モデル、4位のCellpose移流+261特徴量GBDT+原画像DoG検証器)を多数構築していたのに対し、5位解法はコンペ序盤に運営(Royer Lab / Thibaut Goldsborough氏)から公開された公式ベースライン **[UNet + Transformer baseline](https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission) を出発点とし、その単一バックボーン設計を崩さずにどこまで極限まで精度を引き上げられるか** を追求した、非常に美しく見通しの良いアーキテクチャとなっています。
 
@@ -656,7 +656,7 @@ Writeup(Section "Results" & "Validation design")および `config.py` の実験�
 ### 比較すると見えてくる5位解法のユニークな立ち位置
 
 * **1位〜4位が「分裂専用モデル」や「GBDT特徴量統合器」を別建てしたのに対し、5位は「1つのニューラルネット(`MyUnet`)」に全てを集約している**:
-  3位は40個の分裂専用TensorRTエンジン、4位は6個の分裂3D CNN + 53特徴CatBoost + 261特徴ペアGBDTを構築しましたが、5位のTang氏は **「共有3D U-Netの特徴ピラミッドから、NodeTransformer 1つでリンク・外見ベクトル・新規出現・細胞分裂の4つをすべて同時に予測させる」** という非常にクリーンなEnd-to-End設計を貫いています。
+  3位は40個の分裂専用TensorRTエンジン、4位は6個の分裂3D CNN + 53特徴CatBoost + 261特徴ペアGBDTを構築しましたが、5位解法は **「共有3D U-Netの特徴ピラミッドから、NodeTransformer 1つでリンク・外見ベクトル・新規出現・細胞分裂の4つをすべて同時に予測させる」** という非常にクリーンなEnd-to-End設計を貫いています。
 * **そのシンプルさを支えたのが「ZebraHub事前学習」と「多段ILP(ILP1〜ILP4)」**:
   モデル構造が単一でシンプルであるぶん、①公開ZebraHubデータセットでの事前学習(+0.016)、②検出確信度をそのままILPのノードコストにする設計(+0.020)、③弱いリンクを一時的な「足場(`scaffold`)」として使って繋ぎ直した後に足場を外すILP3(`relink_ilp`)、④未採用の検出点へスナップさせながら2〜10フレームの途切れを繋ぐILP4(`close_gaps`)という、**ニューラルネットの出力と数理計画法(ILP)の結合部分の緻密さ**で金メダル圏内(Public 0.971 / 5位)へと到達しています。
 
