@@ -3,7 +3,7 @@
 
 ## Abstract
 - biohub 5位解法(Tang/hirotetsuさん Public 0.971 / Private 0.958)のまとめ
-  - 公開ベースライン(`thibautgoldsborough/unet-baseline-inference-submission`)の「Single-Backbone(3D Temporal U-Net + Node Transformer) + 大域的ILP」という骨格をベースに、その弱点を徹底的に洗い出して正統進化させた王道エンドツーエンド解法。
+  - コンペ主催者の公開コード(`thibautgoldsborough/unet-baseline-inference-submission`)の「Single-Backbone(3D Temporal U-Net + Node Transformer) + 大域的ILP」という骨格を活用。その弱点を補完強化してスコアアップした。
   - 1つの共有バックボーン(TemporalUNet3D)から細胞検出を行い、同じマルチスケール特徴マップからサンプリングした特徴量で **「リンク確率・16次元外見類似度(Identity)・新規出現スコア(Appearance)・細胞分裂スコア(Division)」の4要素** をNodeTransformer(v1/v2)で一括予測。
   - 4つの公開ZebraHubデータセットによる事前学習、8方向TTA(`8fixed`)×11モデルアンサンブル(`run53` 5-fold + `run74` 5-fold + `run79` fold0)、および **多段ILPトラッキング(ILP1〜ILP4: HiGHS局所厳密MILPソルバー) + 運動保存直線スムージング + 1フレーム欠損補間** で完結。
 
@@ -18,7 +18,7 @@
 
 ```mermaid
 flowchart LR
-    subgraph Baseline["公開ベースライン (unet-baseline-inference-submission)"]
+    subgraph Baseline["コンペ主催者の公開コード(unet-baseline-inference-submission)"]
         B1["ストライド間引き読込<br/>z[::1, ::4, ::4]<br/>+ 整数ピーク座標"] --> B2["TemporalUNet3D<br/>+ SimpleNodeTransformer<br/>(edgeリンク確率のみ)"]
         B2 --> B3["単一ステージILP<br/>(ノードコストなし・固定重み)<br/>+ 整数丸めCSV出力"]
     end
@@ -36,8 +36,11 @@ flowchart LR
 Private LB 1353位/3800人と大変悔しい結果に終わりましたが、Kaggleの素晴らしいところは、トップ層の解法が公開されることです。
 このお宝を徹底的に解析し、確実に自身のスキルへと昇華させるべく、今回はソロ参加で5位(3,947チーム中5位・金メダル)に入賞された (Tang/hirotetsu)さんの解法を深掘りします。
 
-1位〜4位の解法がそれぞれ独自の専用モジュール(1位のSoon Net、2位のカルマンフィルタ多段審査、3位のFlowNet3D+40個のTensorRT分裂モデル、4位のCellpose移流+261特徴量GBDT+原画像DoG検証器)を多数構築していたのに対し、5位解法はコンペ序盤に運営(Royer Lab / Thibaut Goldsborough氏)から公開された公式ベースライン **[UNet + Transformer baseline](https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission) を出発点とし、その単一バックボーン設計を崩さずにどこまで極限まで精度を引き上げられるか** を追求した、非常に美しく見通しの良いアーキテクチャとなっています。
+5の位解法って、
+1位〜4位の解法がコンペ主催者の公開コードを捨てて、それぞれ独自の専用モジュール(1位のSoon Net、2位のカルマンフィルタ多段審査、3位のFlowNet3D+40個のTensorRT分裂モデル、4位のCellpose移流+261特徴量GBDT+原画像DoG検証器)を構築したのに対し、5位解法はコンペ序盤にコンペ主催者(Royer Lab / Thibaut Goldsborough氏)から公開されてたコード **[UNet + Transformer baseline](https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission) を出発点とし、その単一バックボーン設計を崩さずにどこまで極限まで精度を引き上げられるか** 活かしたアーキテクチャなんですね。
 
+- 出発点となったコンペ主催者の公開コード(Baseline Notebook)
+https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission
 - 解説のURL(Writeup)
 https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/5th-place-3d-u-net-transformer-linker-multi-s
 - 5位解法 推論コード(Kaggle Kernel)
@@ -45,21 +48,19 @@ https://www.kaggle.com/code/hirotetsu/ctdd-11model-final-v2-ilp1-rematch-adj-off
 - 5位解法 コードデータセット & 学習済み重みデータセット
 https://www.kaggle.com/datasets/hirotetsu/ctdd-final-v2-ilp1-rematch-adj-off-code
 https://www.kaggle.com/datasets/hirotetsu/ctdd-run53-run74-run79-ensemble-code
-- 出発点となった公開ベースライン(Baseline Notebook)
-https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission
 
 ## biohub 5位解法まとめ
-5位解法の特徴はざっくりと
+5位解法の特徴は
 - **「公開ベースライン(3D U-Net + Transformer + ILP)の弱点を1つずつ潰し切った正統進化アプローチ」**
 - **「リンカーへの4出力(Link / Identity / Appearance / Division)の集約」** と **「検出確信度コスト・足場リンク・ギャップ結合を備えた多段ILP(ILP1〜ILP4)」**
 
 です。
 
-### 公開ベースライン(`unet-baseline`)と5位解法の徹底比較
+### コンペ主催者の公開コード(`unet-baseline`)と5位解法での改善点
 
 まず、元のコード(`unet-baseline-inference-submission`)と5位解法(`ctdd-11model-final-v2-ilp1-rematch-adj-off`)がどのように変わったのかを一覧表で比較します。
 
-| 比較項目 | 公開ベースライン (`unet-baseline-inference-submission`) | 5位解法 (`ctdd-11model-final-v2-ilp1-rematch-adj-off`) | スコアへの寄与・改善理由 |
+| 比較項目 | コンペ主催者の公開コード(`unet-baseline-inference-submission`) | 5位解法 (`ctdd-11model-final-v2-ilp1-rematch-adj-off`) | スコアへの寄与・改善理由 |
 | :--- | :--- | :--- | :--- |
 | **空間ダウンサンプリング** | スライス間引き `raw[:, ::1, ::4, ::4]`<br>(4ピクセル中3ピクセルを捨てており、エイリアシングと位置ズレが発生) | **3D Average Pooling (`F.avg_pool3d(1, 4, 4)`)**<br>+ ボクセル中心を合わせる座標変換 `(c + 0.5) / s - 0.5` | 4×4領域の全輝度情報を保持し、元の解像度との幾何学的な中心ズレ(最大1.5ボクセル)を完全に解消 |
 | **ピーク座標の精度** | `int16` の整数グリッド座標に丸め込み (`coords[:, 1:] *= ds_arr`) | **対数放物線サブボクセル補正 (`refine_peaks_parabolic`)**<br>+ 最終CSVも小数第3位の `float` で出力 | 4倍縮小グリッドの粗い量子化誤差を解消し、Z軸(1.625µm間隔)の丸めによる `-0.0074` のスコア損失も回避 |
@@ -119,9 +120,9 @@ https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submissi
 │       ├── run53/fold_0..4/                       # Group 1: Plain TemporalUNet3D(32,64,128) + NodeTransformer v1 (5 models)
 │       ├── run74/fold_0..4/                       # Group 2: Plain TemporalUNet3D(32,64,128) + NodeTransformer v2 (5 models)
 │       └── run79/fold_0/                          # Group 3: Residual TemporalUNet3D(64,128,256) + NodeTransformer v2 (1 model)
-├── cellmot-baseline-artifacts/                    # 公開ベースラインのコード & 重み (edge_predictor_best.pth)
-├── unet-baseline-inference-submission.ipynb       # 公開ベースライン 推論ノートブック原本
-├── unet_baseline_inference.py                     # 公開ベースライン ローカル・Kaggle両対応推論スクリプト
+├── cellmot-baseline-artifacts/                    # コンペ主催者の公開コードのコード & 重み (edge_predictor_best.pth)
+├── unet-baseline-inference-submission.ipynb       # コンペ主催者の公開コード 推論ノートブック原本
+├── unet_baseline_inference.py                     # コンペ主催者の公開コード ローカル・Kaggle両対応推論スクリプト
 ├── verify_local_env.py                            # 環境・GPU・全28ファイルSHA-256ハッシュ・モデルロード検証スクリプト
 ├── input/test/                                    # テスト用Zarr動画データ (4動画)
 ├── working/                                       # 推論作業ディレクトリ (predictions/*.geff, submission.csv)
@@ -551,7 +552,7 @@ Stage3のILP3(`es3`)は連続するフレーム $(t, t+1)$ 間のエッジのみ
   - **第2パス (`strict = False`)**: 方向内積条件を満たさなかった残りのペアについても、第1パスで追加された合成ノードと `3.0 µm` 以内で衝突しない限り追加採用します。
 
 #### 5-3. なぜ最終CSVの座標を整数丸めせず `float` (小数第3位)で出すのか？ (`write_submission`, `utils.py` L1171-L1216)
-公開ベースライン(`unet-baseline-inference-submission.ipynb`)では、最終CSVを作成する際に `int(round(r["z"]))` と整数ボクセルに丸めていました。
+コンペ主催者の公開コード(`unet-baseline-inference-submission.ipynb`)では、最終CSVを作成する際に `int(round(r["z"]))` と整数ボクセルに丸めていました。
 しかし、`utils.py` (L1191-L1198)のコメントに極めて重要な知見が記されています:
 > **「公式評価指標はユークリッド距離でノードをマッチングする。フル解像度グリッドであってもZ軸の1ボクセルは `1.625 µm` もあるため、整数に丸めるとZ座標が `1.625 µm` 単位で量子化されてしまい、スムージングによってホールドアウト検証で稼いだ `+0.0246` のゲインのうち `0.0074` をドブに捨てることになる」**
 
@@ -664,7 +665,7 @@ Writeup(Section "Results" & "Validation design")および `config.py` の実験�
 
 ## まとめ
 
-Biohubコンペの5位解法は、多くの参加者が一度は触れたはずの **「公式公開ベースライン(`unet-baseline-inference-submission`)」を出発点としながら、データの問題点・前処理の歪み・リンカーの表現力・ILPの目的関数・最終出力の丸め誤差に至るまで、パイプラインのあらゆるボトルネックを科学的に特定して潰し切ることでソロ金メダル(5位)を獲得した、最もお手本にしやすい王道ソリューション** でした。
+Biohubコンペの5位解法は、多くの参加者が一度は触れたはずの **「コンペ主催者の公開コード(`unet-baseline-inference-submission`)」を出発点としながら、データの問題点・前処理の歪み・リンカーの表現力・ILPの目的関数・最終出力の丸め誤差に至るまで、パイプラインのあらゆるボトルネックを科学的に特定して潰し切ることでソロ金メダル(5位)を獲得した、最もお手本にしやすい王道ソリューション** でした。
 
 特に学びとして持ち帰りたい重要ポイントは以下の5点です:
 
