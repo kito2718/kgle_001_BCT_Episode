@@ -277,7 +277,7 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main処理} \\ &\tex
 
 #### 1-3. 88ビュー統合ピーク検出と対数放物線サブボクセル補正 (`prob_to_zyx`, `refine_peaks_parabolic`)
 1. **88ビューのアンサンブル確率マップ生成 (`forward_models`, `inference.py` L130-L150)**:
-   - 11個のモデルそれぞれについて、8方向TTAの検出ロジット `detect_head(head)` を逆変換(`undo_tta`)して8ビュー平均をとり、さらに11モデル間でロジットを平均してからSigmoid関数をかけることで、極めて滑らかで高精度な3D細胞中心確率マップ `probabilities` を得ます。
+   - 11個のモデルそれぞれについて、8方向TTAの検出ロジット `detect_head(head)` を逆変換(`undo_tta`)して8ビュー平均をとり、さらに11モデル間でロジットを平均してからSigmoid関数をかけて、滑らかな3D細胞中心確率マップ `probabilities` を得ます。
    - また、フレームペア $(t-1, t)$ の第2フレームと $(t, t+1)$ の第1フレームで計算が重複しないよう、`detected1` を次ステップの `detected0` として再利用する設計になっています(L274-L275)。
 2. **物理半径5.0µmの3D Max Pooling NMS (`prob_to_zyx`, `utils.py` L165-L186)**:
    - 縮小後のボクセルサイズ `1.625 µm` に対し、`pool_kernel_um = 5.0 µm` から計算された `3 × 3 × 3` カーネルで `F.max_pool3d` を実行し、近傍極大かつ確率が閾値(`low_point_threshold = 0.60`)を超えるボクセルを整数ピーク `peaks` として抽出します。
