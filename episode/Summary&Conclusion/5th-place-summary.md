@@ -247,16 +247,23 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main処理} \\ &\tex
 
 <br/><br/>
 
-### ◆Stage1. 等方性3D Average Pooling前処理と `TemporalUNet3D` による細胞検出
+### ◆Stage1. 等方性3D Average Pooling(平均プーリング)前処理と `TemporalUNet3D` による細胞検出
 
 #### 1-1. 3D Average Pooling による等方性グリッド化と正確な座標変換 (`dataset.py`, `utils.py`)
 コンペの顕微鏡動画は1フレームあたり `(Z=64, Y=256, X=256)` ボクセルであり、物理ボクセル間隔は `Z = 1.625 µm`, `Y = X = 0.40625 µm` と、XY方向がZ方向の4倍細かい異方性(Anisotropic)データです。
-* **公開ベースラインの欠点**: ベースライン(`predict_unet_transformer.py` L215)では `zarr_arr[t, ::1, ::4, ::4]` と4ボクセルごとに1つだけを抜き出すストライド間引きを行っており、かつ座標変換も単純な割り算 `coords / downsample` だったため、16ボクセル中15ボクセルの輝度情報が失われ、さらにボクセル中心が `1.5` ピクセル(約 `0.6 µm`)ズレていました。
+* **主催者コードの欠点**: 主催者提供の公開コード(`predict_unet_transformer.py` L215)では `zarr_arr[t, ::1, ::4, ::4]` と4ボクセルごとに1つだけを抜き出すストライド間引きを行っており、かつ座標変換も単純な割り算 `coords / downsample` だったため、16ボクセル中15ボクセルの輝度情報が失われ、さらにボクセル中心が `1.5` ピクセル(約 `0.6 µm`)ズレていました。
 * **5位解法の改善 (`downsample_volume`, `image_to_network_coordinates`, `utils.py` L46-L73)**:
   - `load_volume()` (`dataset.py` L510-L539)にて、4フレームずつチャンク読み込みしながら **`F.avg_pool3d(volume, kernel_size=(1, 4, 4), stride=(1, 4, 4))`** を適用します。これにより全ボクセルの輝度を平均化してノイズを抑えつつ、全軸が `1.625 µm` 間隔の完全な**等方性3Dボリューム `(64, 64, 64)`** に変換します。
   - 輝度はZarrメタデータに記録された動画全体の0.1%〜99.9%分位点(`q_low`, `q_high`)で正規化し、`0.0` 以上にクリップします。
-  - さらに、Average Poolingのブロック中心と元の画像座標の中心を正確に一致させるため、以下の半ボクセルオフセット付き座標変換式(`utils.py` L55-L73)を徹底しています:
-    $$\mathbf{x}_{\text{net}} = \frac{\mathbf{x}_{\text{raw}} + 0.5}{\mathbf{d}} - 0.5, \qquad \mathbf{x}_{\text{raw}} = (\mathbf{x}_{\text{net}} + 0.5) \odot \mathbf{d} - 0.5 \quad (\mathbf{d} = (1, 4, 4))$$
+  - さらに、Average Poolingのブロック中心と元の画像座標の中心を正確に一致させるため、縮小率 $\mathbf{d} = (1, 4, 4)$ に対して以下の半ボクセルオフセット(`0.5`)付き座標変換式(`utils.py` L55-L73)で計算しています:
+  - **① 学習時(元画像の正解座標 $\mathbf{x}_{\text{raw}}$ $\rightarrow$ 縮小グリッド座標 $\mathbf{x}_{\text{net}}$ への変換 `image_to_network_coordinates`)**:
+    $$\mathbf{x}_{\text{net}} = \frac{\mathbf{x}_{\text{raw}} + 0.5}{\mathbf{d}} - 0.5$$
+  - **② 推論時(U-Netの予測座標 $\hat{\mathbf{x}}_{\text{net}}$ $\rightarrow$ 元画像スケールの予測座標 $\hat{\mathbf{x}}_{\text{raw}}$ への復元 `network_to_image_coordinates`)**:
+    $$\hat{\mathbf{x}}_{\text{raw}} = (\hat{\mathbf{x}}_{\text{net}} + 0.5) \odot \mathbf{d} - 0.5$$
+    - $\mathbf{x}_{\text{raw}} = (z_{\text{raw}}, y_{\text{raw}}, x_{\text{raw}})$ : 元画像解像度 `(Z=64, Y=256, X=256)` 上の3次元座標
+    - $\mathbf{x}_{\text{net}} = (z_{\text{net}}, y_{\text{net}}, x_{\text{net}})$ : 縮小後のU-Net入力グリッド `(Z=64, Y=64, X=64)` 上の3次元座標
+    - $\mathbf{d} = (d_z, d_y, d_x) = (1, 4, 4)$ : 各軸のダウンサンプリング倍率(Z軸は等倍、Y・X軸は4分の1縮小)
+    - $\odot$ , $/$ : 各軸(Z, Y, X)ごとの要素積(アダマール積)
 
 #### 1-2. XY平面8方向TTA (`8fixed`) と `TemporalUNet3D` のマルチスケール特徴抽出 (`models.py`, `utils.py`)
 * **XY平面8方向TTA (`do_tta` / `undo_tta`, `utils.py` L281-L320)**:
