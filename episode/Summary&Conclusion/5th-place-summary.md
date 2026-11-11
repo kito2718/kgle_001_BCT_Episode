@@ -77,7 +77,7 @@ https://www.kaggle.com/datasets/hirotetsu/ctdd-run53-run74-run79-ensemble-code
 | **空間ダウンサンプリング** | スライス間引き `raw[:, ::1, ::4, ::4]`<br>(4ピクセル中3ピクセルを捨てており、エイリアシングと位置ズレが発生) | **3D Average Pooling (`F.avg_pool3d(1, 4, 4)`)**<br>+ ボクセル中心を合わせる座標変換 `(c + 0.5) / s - 0.5` | 4×4領域の全輝度情報を保持し、元の解像度との幾何学的な中心ズレ(最大1.5ボクセル)を完全に解消 |
 | **ピーク座標の精度** | `int16` の整数グリッド座標に丸め込み (`coords[:, 1:] *= ds_arr`) | **対数放物線サブボクセル補正 (`refine_peaks_parabolic`)**<br>+ 最終CSVも小数第3位の `float` で出力 | 4倍縮小グリッドの粗い量子化誤差を解消し、Z軸(1.625µm間隔)の丸めによる `-0.0074` のスコア損失も回避 |
 | **検出損失関数** | アノテーション座標1点のみを正例とする単純BCE(Binary Cross Entropy/BCE損失関数) (`compute_detection_loss`) | **3Dガウシアン($\sigma=1.0$) + CenterNet型Focal損失**<br>(正例・負例を個別にカウント正規化、`det_neg_weight=0.01`) | 疎ラベル(数%のみアノテーション)環境下でもピーク周辺の勾配が滑らかになり、サブボクセル放物線フィットと完全整合 |
-| **リンカーの構造** | `SimpleNodeTransformer`<br>・整数座標の1スケール特徴量(32ch)のみ<br>・フレーム間Cross-Attentionのみ<br>・ピクセル単位の相対座標差 `(c_a - c_b)/100` | **`NodeTransformerV2` (`run74`, `run79`)**<br>・**マルチスケール特徴量**(Head+Decoder+Bottleneck計224/416ch)を精製座標でTrilinear補間抽出<br>・**同一フレーム内Self-Attention** + フレーム間Cross-Attention<br>・**物理単位($\mu\text{m}$)の変位ベクトルとユークリッド距離**を入力 | 同一フレーム内の近접細胞の競合関係をSelf-Attentionで把握し、異方性ボクセルに惑わされない物理距離ベースのペア採点を実現 |
+| **リンカーの構造** | `SimpleNodeTransformer`<br>・整数座標の1スケール特徴量(32ch)のみ<br>・フレーム間Cross-Attentionのみ<br>・ピクセル単位の相対座標差 `(c_a - c_b)/100` | **`NodeTransformerV2` (`run74`, `run79`)**<br>・**マルチスケール特徴量**(Head+Decoder+Bottleneck計224/416ch)を精製座標でTrilinear補間抽出<br>・**同一フレーム内Self-Attention** + フレーム間Cross-Attention<br>・**物理単位($\mu\text{m}$)の変位ベクトルとユークリッド距離**を入力 | 同一フレーム内の近傍細胞の競合関係をSelf-Attentionで把握し、異方性ボクセルに惑わされない物理距離ベースのペア採点を実現 |
 | **リンカーの出力ヘッド** | `edge` (リンク確率) の **1種類のみ** | **4種類のマルチタスク出力**:<br>① `edge` (リンク確率)<br>② `identity` (16次元外見ベクトル類似度, InfoNCE/CE損失)<br>③ `appearance` (新規出現確率, `pos_weight=10`)<br>④ `division` (細胞分裂確率, `pos_weight=20`) | **単一で最大の改善(Public +0.020 / Private +0.024)**。稀な分裂や視野流入細胞を専用ヘッドで直接検知し、ILPのノード別コストへ直結 |
 | **学習データ・事前学習** | コンペ訓練データのランダム分割(Split 0)のみ | **4つの公開ZebraHubデータセット(`ZSNS001, 003, 004, 005`)で事前学習** + クリップ種別・分裂数による層化5-fold CV + 人手レビュー分裂データ補強 | **Public +0.014 / Private +0.016**。大規模な完全アノテーション付き外部胚データで表現力を獲得 |
 | **TTA & アンサンブル** | 単一モデル + 検出時のみ4方向フリップTTA (`det_tta`) | **11モデルアンサンブル**(`run53`×5 + `run74`×5 + `run79`×1)<br>× **8方向XY反転・回転TTA(`8fixed`)** を検出・特徴量・リンク・外見類似度の全段階で融合 | 5-foldアンサンブルで **+0.008/+0.007**、8方向TTAで **+0.007/+0.005** の安定した上積み |
@@ -207,24 +207,21 @@ flowchart TD
 
 ## パイプラインの詳細解説
 
-### ◆Stage0. Main & Fast Scheduling(整合性検証・OOM自動回避・GPU/CPU非同期並列)
+### ◆Stage0. Main処理(OOM管理・GPU/CPU非同期並列)
 
-推論エントリスクリプト(`ctdd-11model-final-v2-ilp1-rematch-adj-off.py`)と高速化スケジューラ(`inference_fast.py`)は、Kaggleの2枚組GPU(T4×2)で11モデル×8方向TTAという重厚な推論を制限時間内に確実・安全に完走させるため、極めて精緻なエンジニアリングが施されています。
+メイン処理(`ctdd-11model-final-v2-ilp1-rematch-adj-off.py`)で並列処理を制御します。
 
-1. **全コード・全重みのSHA-256ハッシュ厳密検証 (`ctdd-11model-final-v2-ilp1-rematch-adj-off.py`, L137-L170)**:
-   - 推論開始前に、リポジトリ内の全17個のPythonスクリプトと、11個のモデルの `.pth` 重みおよび `config.json`(計22ファイル)のすべてに対して `hashlib.file_digest(source, "sha256")` を計算し、1ビットでも異なれば即座にアサーション停止する設計になっています。また主要ハイパーパラメータ(`edge_threshold == 0.20`, `gap_close["gaps"] == (2, 10)`, `smooth_weight == 0.825` 等)もすべて `assert` で検証されます。
-2. **大容量モデルの優先実行とAttention重み破棄 (`inference_fast.py`, L30-L89)**:
-   - **`model_execution_order()` (L78-L88)**: 11モデルのうち、チャネル幅が2倍(`64, 128, 256`)でVRAM消費が最大の `run79`(Residual U-Net)を**他のモデルの特徴マップがVRAMを占有する前に必ず最初に実行**し、アンサンブル平均をとる際は元のモデル順序(`[0..10]`)に格納することで、数値結果を変えずにピークVRAMを削減します。
+1. **大容量モデルを優先実行してAttention重みは破棄 (`inference_fast.py`, L30-L89)**:
+   - **`model_execution_order()` (L78-L88)**: 11モデルのうち、チャネル幅が2倍(`64, 128, 256`)でVRAM消費が最大の `run79`(Residual U-Net)を**他のモデルの特徴マップより先に実行**して、アンサンブル平均をとる際は元のモデル順序(`[0..10]`)に格納することで、数値結果を変えずにピークVRAMを削減しています。
    - **`fast_model_context()` (L41-L76)**: 推論時、すべての `CrossAttentionBlock` の `forward` メソッドを一時的にモンキーパッチし、MultiheadAttentionの `need_weights=False` を強制することで不要なAttention行列のメモリ確保を省きます。
-3. **OOM自動チャンク縮小ランナー (`InferenceUNetRunner`, `inference_fast.py` L131-L224)**:
-   - 8方向TTAの8ビューを一括バッチ(`batch_size = 8`)で3D U-Netに入力しますが、もしVRAM不足で `torch.OutOfMemoryError` が発生した場合、例外スコープを抜けてテンソルを解放・`torch.cuda.empty_cache()` を呼んだ上で、自動的にチャンクサイズを **`8 → 4 → 2 → 1`** と半分に縮小してリトライします。これにより、8GB VRAMのローカルGPU(RTX 4060等)でも8ビューすべてを欠落なく完走できます。
-4. **動画フレーム数順の優先度キューとGPU/CPU非同期オーバーラップ (`run_scheduled`, `inference_fast.py` L226-L346)**:
-   - Zarrメタデータから各動画のフレーム数を読み取り、**フレーム数が多い動画から優先的に処理する共有 `PriorityQueue`** を構築します(マルチGPU間で最後に重い動画が残って片方のGPUが遊んでしまう現象を防ぐため)。
+2. **OOM時縮小実行 (`InferenceUNetRunner`, `inference_fast.py` L131-L224)**:
+   - 8方向TTAの8ビューを一括バッチ(`batch_size = 8`)で3D U-Netに入力しますが、もしVRAM不足で `torch.OutOfMemoryError` が発生した場合、例外スコープで、一旦テンソルを解放・`torch.cuda.empty_cache()` 。チャンクサイズを **`8 → 4 → 2 → 1`** と半分に縮小後リトライ実行。これにより、8GB VRAMのローカルGPU(RTX 4060等)でも8ビューすべてを完走させます。
+3. GPU/CPU非同期 (`run_scheduled`, `inference_fast.py` L226-L346)**:
    - 各GPUワーカースレッドは内部に `ThreadPoolExecutor(max_workers=1)` のCPUスレッドを持ち、**「クリップ $i$ のCPU多段ILP求解(`solve_save`)」と「次のクリップ $i+1$ のGPUニューラル推論(`predict_graph_gpu`)」を完全にオーバーラップして並列実行**します。
 
 #### Stage0. フローチャート
 
-$$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main \& Fast Scheduler} \\ &\text{オフラインWheel導入・全39ファイルSHA-256検証・最長動画優先キュー起動} \\ &\text{\small \texttt{ctdd-11model-final-v2-ilp1-rematch-adj-off.py(L64-L208)}, \texttt{inference\_fast.py(L226-L346)}} \end{aligned} } \\
+$$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main処理} \\ &\text{\small \texttt{ctdd-11model-final-v2-ilp1-rematch-adj-off.py(L64-L208)}, \texttt{inference\_fast.py(L226-L346)}} \end{aligned} } \\
 \downarrow \\
 \boxed{ \begin{aligned} &\textbf{Stage1. 等方性3D Average Pooling \& 11モデル×8方向TTA 細胞中心検出} \\ &\text{\small ・呼び出し元: \texttt{inference.py::predict\_graph\_gpu(L340-L364)} $\rightarrow$ \texttt{predict\_clip(L33-L276)}} \\ &\text{\small ・前処理 \& TTA: \texttt{dataset.py::load\_volume(L510-L539)}, \texttt{utils.py::do\_tta / undo\_tta(L281-L320)}} \\ &\text{\small ・3D U-Net \& 放物線補正: \texttt{models.py::TemporalUNet3D(L226-L299)}, \texttt{utils.py::refine\_peaks\_parabolic(L189-L219)}} \end{aligned} } \\
 \downarrow \\
