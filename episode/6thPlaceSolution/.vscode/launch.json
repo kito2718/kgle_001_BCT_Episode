@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Biohub 6th Place: Main (biohub-cell-tracking-inference.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/biohub-cell-tracking-inference.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "subProcess": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder};${workspaceFolder}/biohub_cell_tracking_kaggle/src",
+        "BIOHUB_SETTINGS": "${workspaceFolder}/SETTINGS.json"
+      }
+    }
+  ]
+}
