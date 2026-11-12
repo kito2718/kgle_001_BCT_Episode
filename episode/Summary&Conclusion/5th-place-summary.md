@@ -16,6 +16,7 @@
 - **CenterNet型ガウシアンFocal損失(`TrackingLoss.detection`)** ... 全体の数%しか細胞がアノテーションされていない疎ラベル問題に対処するため、正解座標の周囲に3Dガウシアン分布($\sigma = 1.0\text{ vox}$)を配置し、正例($\text{target}=1$)と負例($\text{target}<1$)をそれぞれのボクセル数で別々に正規化した上で、負例側に $(1 - \text{target})^4$ の距離減衰と小さな重み(`det_neg_weight = 0.01`)を掛ける損失関数。
 - **多段ILPトラッキング(ILP1〜ILP4)** ... 1回のILPで全てを決めるのではなく、段階的にグラフを洗練する数理最適化パイプライン。①高確信度ノード($p \ge 0.9$)のみで基準木を作る **ILP1**、②低閾値ノード($p \ge 0.6$)を入れてギャップを埋めつつ偽分裂を抑制する **ILP2**、③ノードと分岐を固定し「弱い足場リンク(`scaffold`: $p \in (0.2, 0.25]$)」を補助に入れて再結合後に足場を撤去する **ILP3(`relink_ilp`)**、④2〜10フレーム離れたトラック終端と始端を速度整合性と空き検出スナップで1対1結合する **ILP4(`close_gaps`)** から構成される。
 - **HiGHS LP緩和 + 局所厳密MILPソルバー(`HighsILPSolver`)** ... トラッキングILPの線形計画(LP)緩和解が「ほぼ全ての変数で最初から整数(0または1)に収束する(全単模性に近い)」という性質を利用し、まず連続LPとして高速に解いた後、端数(小数)になった変数から制約グラフ上で `hops=100` ステップ以内の近傍変数だけを開放して厳密な混合整数計画法(MILP: `mip_rel_gap=0.0`)で解き直す高速・厳密ソルバー。
+- **アブレーションスタディ** ... AIモデルの検証時に、モデルやシステムの各構成要素を一つずつ除去・変更し、それぞれが全体の性能にどの程度寄与しているかを調べる分析手法です。名称は神経科学における脳の一部を除去して機能を調べる実験に由来しています。
 - **BCE** ... Binary Cross-Entropy。BCE損失関数のこと。正式には難解に見える下記数式なんだけど、実はそんな対した意味はない。「Yes(1) か No(0) かの2択クイズ(二値分類)で、モデルの予想確率がどれくらい外れているかを測る損失関数(ペナルティ)」を計算する。
 $$L = -\frac{1}{N} \sum_{i=1}^{N} \left[ y_i \log(\hat{y}_i) + (1 - y_i) \log(1 - \hat{y}_i) \right] \newline y_i:正解ラベル(0 \;or\; 1) \newline \hat{y}_i:モデルが予測した確率(0 < \hat{y}_i < 1)\newline ※通常は最終層に Sigmoid 関数を適用した出力 $$
 このままだと難解なままなので、実はしょうもないという説明を。
@@ -39,7 +40,7 @@ Private LB 1353位/3800人と大変悔しい結果に終わりましたが、Kag
 
 - 出発点となったコンペ主催者の公開コード(Baseline Notebook)
 https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission
-- 解説のURL(Writeup)
+- 5位解法の解説URL
 https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/5th-place-3d-u-net-transformer-linker-multi-s
 - 5位解法 推論コード(Kaggle Kernel)
 https://www.kaggle.com/code/hirotetsu/ctdd-11model-final-v2-ilp1-rematch-adj-off
@@ -48,7 +49,14 @@ https://www.kaggle.com/datasets/hirotetsu/ctdd-final-v2-ilp1-rematch-adj-off-cod
 https://www.kaggle.com/datasets/hirotetsu/ctdd-run53-run74-run79-ensemble-code
 
 ## biohub 5位解法まとめ
+
+> [!IMPORTANT]
+> **主催ラボ(Biohub / Royer Lab)に、公開データとして「ZebraHub」による教師あり事前学習(+0.016)** のデータが公開されているというね。
+> コンペで配布された訓練データは「画面内の数%の細胞しか正解ラベルが付いていない(疎ラベル、1フレーム最大64個程度)」という制約である一方、主催者(Royer Lab)が一般公開している元データベース 「ZebraHub」(`ZSNS001, 003, 004, 005` の4種) には、3D動画(`.zarr`)だけでなく **「1フレームあたり最大1,024個もの細胞にびっしり正解座標(`nodes`)と追跡・分裂リンク(`edges`)が付いたデータ(`.geff`)」** が公開されていました。
+> そのため、MAEのような画像穴埋め(自己教師あり学習)をするまでもなく、**「ラベル完備のZebraHubで本番とまったく同じタスク・損失関数(`TrackingLoss`)を丸ごと予習(教師あり事前学習)し、その後コンペ訓練データでファインチューニングする」** だけで、Public **+0.014** / Private **+0.016** という決定的な差がついています。
+
 5位解法の特徴は
+- **「公開ZebraHubデータセット(4種・密ラベル)による教師ありデータに気づけたこと」**
 - **「コンペ主催者の公開コード(3D U-Net + Transformer + ILP)を補足強化するため1つずつ弱点を潰し切ったアプローチ」**
 - **「リンカーへの4出力(Link / Identity / Appearance / Division)の集約」** と **「検出確信度コスト・足場リンク・ギャップ結合を備えた多段ILP(ILP1〜ILP4)」**
 
@@ -342,7 +350,8 @@ sequenceDiagram
 Stage1で検出されたフレーム $t$ の細胞群($N_t$ 個)とフレーム $t+1$ の細胞群($N_{t+1}$ 個)に対し、共有バックボーン `TemporalUNet3D` がすでに出力している特徴マップを再利用してノード特徴量を組み立て、Transformerリンカーで 4種類の予測値(`edge_prob`, `id_dissim`, `appearance_prob`, `division_prob`)を一括算出します。
 
 #### 2-1. 2世代のノード特徴量サンプリング (`sample_node_features`, `models.py` L534-L551)
-11個のアンサンブルモデルには、`v1`(`run53` の5モデル)と `v2`(`run74` の5モデル + `run79` の1モデル)の2種類のリンカーが含まれており、特徴量の抜き出し方が大きく進化しています:
+11個のアンサンブルモデルには、`v1`(`run53` の5モデル)と `v2`(`run74` の5モデル + `run79` の1モデル)の2種類のリンカーが含まれており、特徴量の抜き出し方が進化していますが、v1もv2も使用してアンサンブルしています。
+
 * **`v1` リンカー (`run53`: 整数ピークでの単一スケール抽出)**:
   - フル解像度($64^3$)のU-Net出力ヘッド `levels[0]`(32ch)から、整数ピーク座標 `peaks` `(z, y, x)` を直接インデックス参照して **32次元** の特徴ベクトルを取得します。
 * **`v2` リンカー (`run74`, `run79`: サブボクセル座標での複数スケールTrilinear補間)**:
@@ -419,10 +428,10 @@ sequenceDiagram
 
 ### ◆Stage3. 検出確信度ノードコスト付き多段ILPトラッキング (ILP1 / ILP2 / ILP3 `relink_ilp`)
 
-Stage2で得られた動画全体の検出ノードと候補エッジを受け取り、`inference.py::solve_graph()` (L366-L398)にて **`tracksdata` + `HighsILPSolver` を用いた多段整数線形計画法(Multi-stage ILP)** を解きます。
+Stage2で得られた動画全体の検出ノードと候補エッジを受け取り、`inference.py::solve_graph()` (L366-L398)にて **`tracksdata` + `HighsILPSolver` を用いた多段整数線形計画法(Multi-stage ILP)** を計算させています。
 
 #### 3-1. ILPの目的関数と「検出確信度ノードコスト」 (`solve_ilp`, `utils.py` L533-L572)
-公開ベースラインのILPは、検出されたノードに対して一切のコスト(または報酬)を与えず、出現・消失・分裂にも全ノード共通の固定定数(`0.1, 0.1, 1.0`)しか使っていませんでした。
+コンペ主催者の公開コードのILPは、検出されたノードに対して一切のコスト(または報酬)を与えず、出現・消失・分裂にも全ノード共通の固定定数(`0.1, 0.1, 1.0`)しか使っていませんでした。
 これに対し5位解法は、Stage1・Stage2で予測した **5つの確率・距離属性(`node_prob` $q_i$, `edge_prob` $p_{ij}$, `id_dissim` $s_{ij}$, `appearance_prob` $a_i$, `division_prob` $d_i$)** をすべてILPの最小化目的関数に組み込んでいます:
 
 $$\min \sum_{i} w_{\text{node}}(i)\cdot x_i + \sum_{(i,j)} w_{\text{edge}}(i,j)\cdot y_{ij} + \sum_{i} w_{\text{app}}(i)\cdot \alpha_i + \sum_{i} w_{\text{dis}}\cdot \delta_i + \sum_{i} w_{\text{div}}(i)\cdot \nu_i$$
@@ -515,15 +524,14 @@ Stage3のILP3(`es3`)は連続するフレーム $(t, t+1)$ 間のエッジのみ
 そこでStage4(`inference.py` L391-L396, `utils.py` L962-L1168)では、分断されたトラック同士を繋ぎ合わせる修復処理を実行します。
 
 #### 4-1. ILP4 (`close_gaps`): 空き検出スナップ付き2〜10フレームギャップ結合 (`utils.py` L1084-L1143)
-`SubmitConfig` で有効化(`gap_close["enable"] = True`)されている主力修復ステージであり、以下のアルゴリズムで **2〜10フレーム離れたトラック終端と始端** を大域的に1対1結合します:
+主力の修復ステージで、以下のアルゴリズムで **2〜10フレーム離れたトラック終端と始端** を大域的に1対1結合します:
 1. **信頼できる端点のみに限定 (`track_ends`, L1052-L1068, L1093-L1097)**:
    - 動画の最終フレームより前で終わっているトラック終端 `ends`(出次数0・入次数1)と、最初のフレームより後で始まっているトラック始端 `starts`(入次数0・出次数1)を抽出します。
    - 短いノイズ断片を誤結合しないよう、**「端点の検出確信度が `min_q = 0.85` 以上、かつそのトラックの連続長(`run_length`)が `min_len = 8` フレーム以上」** の堅牢なトラック端点のみを対象とします。
 2. **ギャップ長 $k \in [2, 10]$ の探索と速度・距離コスト計算 (L1103-L1114)**:
    - 終端 $e$ (時刻 $t_e$)から $k \in \{2, 3, \dots, 10\}$ フレーム後の始端 $s$ (時刻 $t_e + k$)のうち、物理3次元距離が **`dist_um = 12.0 µm` 以内** にある候補ペアを `cKDTree` で探索します。
-   - 1フレームあたりの平均移動ベクトル $\text{step} = (\mathbf{u}_s - \mathbf{u}_e) / k$ を求め、終端直前の速度 $\mathbf{v}_{\text{before}} = \mathbf{u}_e - \mathbf{u}_{\text{parent}(e)}$ および始端直後の速度 $\mathbf{v}_{\text{after}} = \mathbf{u}_{\text{child}(s)} - \mathbf{u}_s$ との最大速度ズレ
+   - 1フレームあたりの平均移動ベクトル $\text{step} = (\mathbf{u}_s - \mathbf{u}_e) / k$ を求め、終端直前の速度 $\mathbf{v}_{\text{before}} = \mathbf{u}_e - \mathbf{u}_{\text{parent}(e)}$ および始端直後の速度 $\mathbf{v}_{\text{after}} = \mathbf{u}_{\text{child}(s)} - \mathbf{u}_s$ との最大速度ズレを下記数式により算出します。
      $$\text{mismatch} = \max\left(\|\text{step} - \mathbf{v}_{\text{before}}\|_2,\; \|\text{step} - \mathbf{v}_{\text{after}}\|_2\right)$$
-     を算出します。
 3. **衝突回避チェックと「未採用の空き検出点(`free_at`)」へのスナップ (L1115-L1130)**:
    - 欠損している中間フレーム $t_e + h$ ($h = 1, \dots, k-1$)における直線補間位置 $\mathbf{x}_h = \mathbf{u}_e + h \cdot \text{step}$ を走査します。
    - **衝突回避**: その中間フレームの半径 **`occupied_um = 3.0 µm` 以内に、すでにグラフ内で採用されている既存ノードが存在する場合は、別細胞の領域を横切っていると判断して結合を棄却**します(L1118-L1119)。
@@ -556,7 +564,7 @@ Stage3のILP3(`es3`)は連続するフレーム $(t, t+1)$ 間のエッジのみ
    - 相対時刻 $\Delta t = t_{\text{chain}} - t_i$ に対する3次元座標 $\mathbf{Y}$ の最小二乗直線の切片($\Delta t = 0$ での予測位置)
      $$\hat{\mathbf{y}}_i = \bar{\mathbf{Y}} - \frac{\Delta \mathbf{t}^\top (\mathbf{Y} - \bar{\mathbf{Y}})}{\Delta \mathbf{t}^\top \Delta \mathbf{t}} \cdot \overline{\Delta t}$$
      を解析的に計算し、元の座標と **`w = 0.825` (82.5%直線 + 17.5%元座標)** の重みでブレンドします。
-   - ※コード内にはカルマンフィルタ+RTSスムーザー(`_rts_track_estimate`, L629-L724)も実装されていますが、局所直線フィット単独の方がシンプルかつ高精度であったためデフォルトでは無効化されています。
+
 3. **最大シフト量キャップ(`smooth_max_shift_um = 4.5 µm`)と運動復元 (L805-L818)**:
    - 急激に曲がる軌道などで直線フィットが元の検出核から離れすぎないよう、物理単位(`SMOOTH_VOXEL_UM = (1.625, 0.40625, 0.40625)`)での移動距離が **`4.5 µm` を超えた場合は `4.5 µm` にクランプ**し、最後にステップ1で引いた全体運動 `motion` を足し戻します。
 
@@ -618,7 +626,7 @@ sequenceDiagram
 
 ## アブレーションスタディと実験の知見
 
-Writeup(Section "Results" & "Validation design")および `config.py` の実験ログに記載されている、各改善要素のリーダーボード効果と重要な知見のまとめです。
+[解説記事](https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/5th-place-3d-u-net-transformer-linker-multi-s)および `config.py` の実験ログに記載されている、各改善要素のリーダーボード効果と重要な知見のまとめです。
 
 ### 1. スコア向上の主要マイルストーン (Writeup Results)
 
@@ -638,7 +646,7 @@ Writeup(Section "Results" & "Validation design")および `config.py` の実験�
 | 観察・試したアイデア | 結果・影響 | なぜそうなったのか(教訓) |
 | :--- | :---: | :--- |
 | **訓練データの「重複フレーム」と「14µm巨大ドリフト」の発見** | **CV設計の鍵** | 訓練データには「次フレームとバイト単位で完全同一の重複フレーム(`DUPLICATE_FRAMES`)」と「1フレームで画像全体が6〜14µm以上ジャンプするドリフトフレーム(`DRIFT_FRAMES`)」が含まれていた。CV評価時にこれらを予測・GTの双方から除外したことで、ノイズに振り回されない信頼できるローカル検証環境が完成した。 |
-| **推論時のフレーム間ドリフト補正 (`drift_compensate`)** | **fold0 CV +0.0060 だが<br>Public LB 変化なし** | 検出点群の相互最近傍グリッドサーチで全体シフトを推定・補正する精緻な処理(`local_flow`, `frame_drift_um`)を実装しCVでは大きく改善したが、LBプローブの結果**「隠されたテストデータには6µm以上のドリフトフレームが1つも存在しない」**ことが判明。これがコンペ全体で多くの参加者がCVとLBの乖離に悩まされた大きな原因だった。 |
+| **推論時のフレーム間ドリフト補正 (`drift_compensate`)** | **fold0 CV +0.0060 だが<br>Public LB 変化なし** | 検出点群の相互最近傍グリッドサーチで全体シフトを推定・補正する精緻な処理(`local_flow`, `frame_drift_um`)を実装しCVでは大きく改善したが、LBプローブの結果 **「隠されたテストデータには6µm以上のドリフトフレームが1つも存在しない」** ことが判明。これがコンペ全体で多くの参加者がCVとLBの乖離に悩まされた大きな原因だった。 |
 | **重複フレーム除外 + ドリフト補正済みデータでのモデル学習** | **Public LB 低下 /<br>Private LB +0.011** | 訓練データから重複フレームを除きドリフトを補正して学習すると、同一fold-0モデルのPrivateスコアは **+0.011** 跳ね上がったが、Public LBが下がったため最終提出には採用しなかった(もし採用していればPrivate 0.969相当で3位〜4位争いに食い込むポテンシャルがあった)。 |
 | **原画像からの輝度重心ブレンド (`refine_centroid`)** | **無効化でGPU推論10%高速化** | 放物線サブボクセル補正(`refine_peaks_parabolic`)と運動保存直線スムージング(`smooth_track_coords`)がすでに十分高精度だったため、フル解像度Zarrを毎フレーム読み直して重心をブレンドする処理は不要となり、OFFにすることで精度を維持したまま推論時間を約10%短縮できた。 |
 
@@ -646,12 +654,12 @@ Writeup(Section "Results" & "Validation design")および `config.py` の実験�
 
 ## 1位・2位・3位・4位・5位解法の比較
 
-これで本コンペの金メダル上位5ソリューション(1位〜5位)がすべて出揃いました！5つのアプローチを並べて比較します。
+本コンペの金メダル上位5解法(1位〜5位)のまとめ！5つのアプローチを並べて比較します。
 
 | 項目 | 1位解法(sersasj) | 2位解法(soheilayati) | 3位解法(yu4u / ren4yu) | 4位解法(BarryZhou / songqizhou) | 5位解法(Tang / hirotetsu) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Public / Private LB** | **0.976 / 0.977** | **0.974 / 0.970** | **0.978 / 0.969** | **0.969 / 0.962** | **0.971 / 0.958** |
-| **基本設計思想** | **ビジュアルトラッキング**<br>細胞の見た目変化・FPN占有マップから直接追跡 | **幾何ヒューリスティクス & 特徴量工学**<br>距離・速度・カルマンフィルタベース | **物理フロー補正 + 数理計画法(LP)**<br>3D Dense Flow + 4段分裂判定 + 整数計画法 | **生物学的観察のモデリング + 個別コストILP**<br>軽量NN + CPU GBDT + ノード別分裂コストILP | **公開ベースラインの極限進化 (Single-Backbone E2E)**<br>共有3D U-Net + 4出力Transformer + 多段ILP |
+| **基本設計思想** | **ビジュアルトラッキング**<br>細胞の見た目変化・FPN占有マップから直接追跡 | **幾何ヒューリスティクス & 特徴量工学**<br>距離・速度・カルマンフィルタベース | **物理フロー補正 + 数理計画法(LP)**<br>3D Dense Flow + 4段分裂判定 + 整数計画法 | **生物学的観察のモデリング + 個別コストILP**<br>軽量NN + CPU GBDT + ノード別分裂コストILP | **コンペ主催者の公開コードの補足改善 (Single-Backbone E2E)**<br>共有3D U-Net + 4出力Transformer + 多段ILP |
 | **検出器 (Detector)** | 3D U-Net (MAE事前学習 + 3Dベクトルフロー予測) | 3D U-Net (5-foldアンサンブル + 多段コンセンサス) | 2.5D U-Net (EffNetV2-L, B7) + 3D SegResNet (15モデルTRT) | Dual-Encoder 3D Net (現在+前後差分) + Cellpose移流 + PL合意洗練 & DoGルーター | **TemporalUNet3D (11モデル×8方向TTA)** + 3D AvgPool縮小 + **対数放物線サブボクセル補正** |
 | **リンク・特徴量抽出** | 視覚特徴からの直接リンク予測 | 幾何距離・カルマンフィルタ速度・近傍特徴 | FlowNet3D変位補正 + 2.5D Siamese EmbedUnet (5-fold) | 幾何・組織フロー残差(26特徴) + Edge Transformer + InfoNCE CNN → LightGBM(47特徴) | **U-Netマルチスケール特徴(Trilinear補間) + NodeTransformerV2 (Self+Cross Attn) + 16D Identity** |
 | **分裂(Division)の解法** | **Soon Net**<br>分裂前後3クラス分類 + 娘細胞占有マップ | **ペア特徴量 + 分裂スタッキング**<br>距離・形状特徴からGBDT/ペアモデル | **4系統の専門モデル (div3f)**<br>parent / pre / post / native-parent (計40 TRT) | **3段階ハイブリッド ($s_i = \max(\text{pair}, \text{cat})$)**<br>5f CNN + 53特徴CatBoost + 261特徴ペアモデル | **リンカー内蔵の `division_head` (`pos_weight=20`)**<br>別モデルを作らず、NodeTransformer内で新規出現・分裂を同時予測 |
