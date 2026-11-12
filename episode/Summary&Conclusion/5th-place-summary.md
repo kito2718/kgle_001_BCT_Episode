@@ -10,6 +10,7 @@
 **用語解説**
 
 - **TemporalUNet3D(時系列3D U-Net)** ... 連続する2フレーム `[t, t+1]` の3D画像ボリュームを入力とし、エンコーダの各階層で空間3D畳み込みの直後に同一ボクセル座標 `(z, y, x)` における時間方向のMulti-Head Self-Attention(`_TemporalAttention`)を適用する3D U-Net。検出ヘッドと後続のTransformerリンカーが**単一の3D特徴抽出バックボーンを共有**する点が最大の特徴。
+- **Transformer** ... ちょくちょく出てくる抽象度の高いキーワードなんですが、要は、繋がり(このコンペだとedge)を計算する数式モデルの総称。複数個のデータのリストを入力 → 全員を総当たりで見比べて(Attention)、『どれとどれが繋がるか』を計算して返すAI関数(数式モデル)の総称。総称なので、具体的なアルゴリズムは別途存在する。
 - **サブボクセル対数放物線フィッティング(`refine_peaks_parabolic`)** ... 4倍ダウンサンプリングされた離散グリッド `(64, 64, 64)` 上でMax Pooling NMSによって見つけたピーク座標 `(z, y, x)` に対し、各軸の前後1ボクセルの対数確率 $\log p$ に放物線(2次関数)を当てはめ、真の頂点オフセット(`[-0.5, +0.5]` ボクセル)を解析的に求める手法。離散化による最大2 µmの量子化誤差を解消する。
 - **NodeTransformer / NodeTransformerV2(4出力Transformerリンカー)** ... フレーム $t$ の検出細胞群とフレーム $t+1$ の検出細胞群の間でAttention計算を行い、①全ペアのリンクロジット `edge`、②16次元の細胞外見埋め込み `identity_embedding`、③フレーム $t+1$ の新規出現ロジット `appearance`、④フレーム $t$ の細胞分裂ロジット `division` の**4つの出力**を同時に予測するネットワーク。`v2` ではマルチスケール特徴量のTrilinear補間サンプリング、同一フレーム内Self-Attention、およびマイクロメートル単位の3次元変位ベクトル入力を導入。
 - **CenterNet型ガウシアンFocal損失(`TrackingLoss.detection`)** ... 全体の数%しか細胞がアノテーションされていない疎ラベル問題に対処するため、正解座標の周囲に3Dガウシアン分布($\sigma = 1.0\text{ vox}$)を配置し、正例($\text{target}=1$)と負例($\text{target}<1$)をそれぞれのボクセル数で別々に正規化した上で、負例側に $(1 - \text{target})^4$ の距離減衰と小さな重み(`det_neg_weight = 0.01`)を掛ける損失関数。
@@ -27,21 +28,6 @@ $$
   - 正解が $y = 1$ の時:
 右項は無視。左項の $- \log(\hat{y})$ だけ見る。予測 $\hat{y}$ が $1$ に近い(正解)とき、$\log(1) = 0$ となり、損失は $0$ に近づきます。予測 $\hat{y}$ が $0$ に近い(大外れ)とき、$\log(0)$ はマイナス無限大に向かうため、損失は 無限大(非常に大きなペナルティ) になります。
 
-
-```mermaid
-flowchart LR
-    subgraph Baseline["コンペ主催者の公開コード(unet-baseline-inference-submission)"]
-        B1["ストライド間引き読込<br/>z[::1, ::4, ::4]<br/>+ 整数ピーク座標"] --> B2["TemporalUNet3D<br/>+ SimpleNodeTransformer<br/>(edgeリンク確率のみ)"]
-        B2 --> B3["単一ステージILP<br/>(ノードコストなし・固定重み)<br/>+ 整数丸めCSV出力"]
-    end
-
-    subgraph Fifth["5位解法(Tang /hirotetsuさん)"]
-        F1["3D Average Pooling縮小<br/>+ 対数放物線サブボクセル補正<br/>+ ZebraHub事前学習"] --> F2["TemporalUNet3D (ResBlock)<br/>+ NodeTransformer v1/v2<br/>(Edge + Identity + Appear + Div)"]
-        F2 --> F3["8方向TTA × 11モデル融合<br/>+ 多段ILP(ILP1〜ILP4)<br/>+ 運動保存直線平滑化 & Float出力"]
-    end
-
-    Baseline ==>|"弱点を体系的に克服<br/>(LB ~0.79 → 0.971)"| Fifth
-```
 
 ## 概要
 先日、Biohub細胞トラッキングコンペが完了しました。
@@ -86,7 +72,22 @@ https://www.kaggle.com/datasets/hirotetsu/ctdd-run53-run74-run79-ensemble-code
 
 ---
 
-### 「データ・バリデーション・評価指標の観察」からの7つの設計指針
+```mermaid
+flowchart LR
+    subgraph Baseline["コンペ主催者の公開コード(unet-baseline-inference-submission)"]
+        B1["ストライド間引き読込<br/>z[::1, ::4, ::4]<br/>+ 整数ピーク座標"] --> B2["TemporalUNet3D<br/>+ SimpleNodeTransformer<br/>(edgeリンク確率のみ)"]
+        B2 --> B3["単一ステージILP<br/>(ノードコストなし・固定重み)<br/>+ 整数丸めCSV出力"]
+    end
+
+    subgraph Fifth["5位解法(Tang /hirotetsuさん)"]
+        F1["3D Average Pooling縮小<br/>+ 対数放物線サブボクセル補正<br/>+ ZebraHub事前学習"] --> F2["TemporalUNet3D (ResBlock)<br/>+ NodeTransformer v1/v2<br/>(Edge + Identity + Appear + Div)"]
+        F2 --> F3["8方向TTA × 11モデル融合<br/>+ 多段ILP(ILP1〜ILP4)<br/>+ 運動保存直線平滑化 & Float出力"]
+    end
+
+    Baseline ==>|"弱点を体系的に克服<br/>(LB ~0.79 → 0.971)"| Fifth
+```
+
+### 「データ・バリデーション・評価指標の観察」からの設計指針7つ
 
 5位解法(Writeupおよびコード内の詳細な設計コメント)では、データの性質と評価指標の挙動を深く分析し、以下の7つの工夫を実装しています。
 
@@ -336,21 +337,21 @@ sequenceDiagram
 
 ---
 
-### ◆Stage2. マルチスケール特徴サンプリングと `NodeTransformer(v1/v2)` による4出力リンク予測
+### ◆Stage2. 複数スケールの特徴サンプリングと `NodeTransformer(v1/v2)` による4出力リンク予測
 
-Stage1で検出されたフレーム $t$ の細胞群($N_t$ 個)とフレーム $t+1$ の細胞群($N_{t+1}$ 個)に対し、共有バックボーン `TemporalUNet3D` がすでに出力している特徴マップを再利用してノード特徴量を組み立て、Transformerリンカーで**4種類の予測値(`edge_prob`, `id_dissim`, `appearance_prob`, `division_prob`)**を一括算出します。
+Stage1で検出されたフレーム $t$ の細胞群($N_t$ 個)とフレーム $t+1$ の細胞群($N_{t+1}$ 個)に対し、共有バックボーン `TemporalUNet3D` がすでに出力している特徴マップを再利用してノード特徴量を組み立て、Transformerリンカーで 4種類の予測値(`edge_prob`, `id_dissim`, `appearance_prob`, `division_prob`)を一括算出します。
 
 #### 2-1. 2世代のノード特徴量サンプリング (`sample_node_features`, `models.py` L534-L551)
 11個のアンサンブルモデルには、`v1`(`run53` の5モデル)と `v2`(`run74` の5モデル + `run79` の1モデル)の2種類のリンカーが含まれており、特徴量の抜き出し方が大きく進化しています:
 * **`v1` リンカー (`run53`: 整数ピークでの単一スケール抽出)**:
   - フル解像度($64^3$)のU-Net出力ヘッド `levels[0]`(32ch)から、整数ピーク座標 `peaks` `(z, y, x)` を直接インデックス参照して **32次元** の特徴ベクトルを取得します。
-* **`v2` リンカー (`run74`, `run79`: サブボクセル座標でのマルチスケールTrilinear補間)**:
+* **`v2` リンカー (`run74`, `run79`: サブボクセル座標での複数スケールTrilinear補間)**:
   - 放物線フィッティングで精緻化された連続座標 `zyx` を `[-1, 1]` の正規化グリッド座標 `grid = (zyx + 0.5) / shape * 2 - 1` に変換します。
   - `align_corners=False` の **`F.grid_sample(..., mode="bilinear")` (5Dテンソルに対しては3次元Trilinear補間)** を用いることで、解像度が異なる3つのピラミッド階層すべてにおいて**物理的に全く同じ3次元空間位置**から特徴量を滑らかに補間抽出して連結します:
     - `run74`: Head(32ch, $64^3$) + Decoder(64ch, $32^3$) + Bottleneck(128ch, $16^3$) = **計224次元**
     - `run79`: Head(64chではなく `out_ch=32`, $64^3$) + Decoder(128ch, $32^3$) + Bottleneck(256ch, $16^3$) = **計416次元**
 * **TTAビュー融合 (`tta_features`, `inference.py` L157-L160)**:
-  - `SubmitConfig` では `tta_head_fusion = True`, `tta_idsim_fusion = True` に設定されており、元の1ビューだけでなく**8方向TTAのすべての逆変換済み特徴マップ(`V=8`)から各ノードの特徴量をサンプリング**し、8ビュー×11モデルのすべてにリンカーを通します。
+  - 元の1ビューだけでなく**8方向TTAのすべての逆変換済み特徴マップ(`V=8`)から各ノードの特徴量をサンプリング**し、8ビュー×11モデルのすべてにリンカーを通します。
 
 #### 2-2. 4つの出力ヘッドの設計と学習時の工夫 (`models.py`: `MyUnet`, `NodeTransformer`, `NodeTransformerV2`, `TrackingLoss`)
 各ノード $i$ の入力トークンは、`[U-Net特徴量(32 / 224 / 416次元) + 外見埋め込み(16次元) + 4次元Fourier位置エンコーディング(32次元)]` を連結したベクトル(`v1`: 80次元、`run74`: 272次元、`run79`: 464次元)です。これを `hidden_dim = 128` に線形射影してTransformerに入力します。
