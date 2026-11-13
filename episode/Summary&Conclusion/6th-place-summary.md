@@ -1,23 +1,27 @@
-18-⑤Kaggle実践3 Biohub細胞トラッキング 5位解法のまとめ
+18-⑤Kaggle実践3 Biohub細胞トラッキング 6位解法のまとめ
 <img src="image.png" width="800" />
 
 ## Abstract
-- biohub 5位解法(Tang/hirotetsuさん Public 0.971 / Private 0.958)のまとめ
-  - コンペ主催者の公開コード(`thibautgoldsborough/unet-baseline-inference-submission`)の「Single-Backbone(3D Temporal U-Net + Node Transformer) + 大域的ILP」という骨格を活用。その弱点を補完強化してスコアアップした。
-  - 1つの共有バックボーン(TemporalUNet3D)から細胞検出を行い、同じマルチスケール特徴マップからサンプリングした特徴量で **「リンク確率・16次元外見類似度(Identity)・新規出現スコア(Appearance)・細胞分裂スコア(Division)」の4要素** をNodeTransformer(v1/v2)で一括予測。
-  - 4つの公開ZebraHubデータセットによる事前学習、8方向TTA(`8fixed`)×11モデルアンサンブル(`run53` 5-fold + `run74` 5-fold + `run79` fold0)、および **多段ILPトラッキング(ILP1〜ILP4: HiGHS局所厳密MILPソルバー) + 運動保存直線スムージング + 1フレーム欠損補間** で完結。
+- biohub 6位解法(Jamal Saeediさん/jamalsaeedi Public 0.961 / Private 0.953)のまとめ
+  - **1つのネットワークで「細胞検出」と「リンク(親子付け)」を同時に実施**、その確率をそのまま大域的ILPのコストとして使い、さらに **パイプライン全体を「教師」にして擬似ラベルを作り、次のモデルを学習する(Teacher → Student)** を何周も回した解法。
+  - 正解ラベルが細胞全体の **約3%** しかない問題に対し、**3状態ターゲット(正例/検証済み背景/未知)+ Count Prior(細胞数事前分布)** で検出器を学習し、**ILPトポロジー由来の約500万細胞・490万リンクの擬似ラベル** で残り97%を埋めた。
+  - 推論は **2アーキテクチャ×6モデル(IsotropicLineageNet×3 + MultiScaleLineageNet×3)** の中心ヒートマップを平均して **共有細胞セット** を作り、各モデルが自前のリンクヘッド+ **自前のLightGBM再スコアラー(23特徴)** で採点 → 確率平均 → **ドリフト補正距離付き Event ILP(LP-first + SCIP)** → **ドリフト補償直線スムージング** で完結。手作業の修復ヒューリスティックは一切なし。
 
 **用語解説**
 
-- **TemporalUNet3D(時系列3D U-Net)** ... 連続する2フレーム `[t, t+1]` の3D画像ボリュームを入力とし、エンコーダの各階層で空間3D畳み込みの直後に同一ボクセル座標 `(z, y, x)` における時間方向のMulti-Head Self-Attention(`_TemporalAttention`)を適用する3D U-Net。検出ヘッドと後続のTransformerリンカーが**単一の3D特徴抽出バックボーンを共有**する点が最大の特徴。
-- **Transformer** ... ちょくちょく出てくる抽象度の高いキーワードなんですが、要は、繋がり(このコンペだとedge)を計算する数式モデルの総称。複数個のデータのリストを入力 → 全員を総当たりで見比べて(Attention)、『どれとどれが繋がるか』を計算して返すAI関数(数式モデル)の総称。総称なので、具体的なアルゴリズムは別途存在する。
-- **サブボクセル対数放物線フィッティング(`refine_peaks_parabolic`)** ... 4倍ダウンサンプリングされた離散グリッド `(64, 64, 64)` 上でMax Pooling NMSによって見つけたピーク座標 `(z, y, x)` に対し、各軸の前後1ボクセルの対数確率 $\log p$ に放物線(2次関数)を当てはめ、真の頂点オフセット(`[-0.5, +0.5]` ボクセル)を解析的に求める手法。離散化による最大2 µmの量子化誤差を解消する。
-- **NodeTransformer / NodeTransformerV2(4出力Transformerリンカー)** ... フレーム $t$ の検出細胞群とフレーム $t+1$ の検出細胞群の間でAttention計算を行い、①全ペアのリンクロジット `edge`、②16次元の細胞外見埋め込み `identity_embedding`、③フレーム $t+1$ の新規出現ロジット `appearance`、④フレーム $t$ の細胞分裂ロジット `division` の**4つの出力**を同時に予測するネットワーク。`v2` ではマルチスケール特徴量のTrilinear補間サンプリング、同一フレーム内Self-Attention、およびマイクロメートル単位の3次元変位ベクトル入力を導入。
-- **CenterNet型ガウシアンFocal損失(`TrackingLoss.detection`)** ... 全体の数%しか細胞がアノテーションされていない疎ラベル問題に対処するため、正解座標の周囲に3Dガウシアン分布($\sigma = 1.0\text{ vox}$)を配置し、正例($\text{target}=1$)と負例($\text{target}<1$)をそれぞれのボクセル数で別々に正規化した上で、負例側に $(1 - \text{target})^4$ の距離減衰と小さな重み(`det_neg_weight = 0.01`)を掛ける損失関数。
-- **多段ILPトラッキング(ILP1〜ILP4)** ... 1回のILPで全てを決めるのではなく、段階的にグラフを洗練する数理最適化パイプライン。①高確信度ノード($p \ge 0.9$)のみで基準木を作る **ILP1**、②低閾値ノード($p \ge 0.6$)を入れてギャップを埋めつつ偽分裂を抑制する **ILP2**、③ノードと分岐を固定し「弱い足場リンク(`scaffold`: $p \in (0.2, 0.25]$)」を補助に入れて再結合後に足場を撤去する **ILP3(`relink_ilp`)**、④2〜10フレーム離れたトラック終端と始端を速度整合性と空き検出スナップで1対1結合する **ILP4(`close_gaps`)** から構成される。
-- **HiGHS LP緩和 + 局所厳密MILPソルバー(`HighsILPSolver`)** ... トラッキングILPの線形計画(LP)緩和解が「ほぼ全ての変数で最初から整数(0または1)に収束する(全単模性に近い)」という性質を利用し、まず連続LPとして高速に解いた後、端数(小数)になった変数から制約グラフ上で `hops=100` ステップ以内の近傍変数だけを開放して厳密な混合整数計画法(MILP: `mip_rel_gap=0.0`)で解き直す高速・厳密ソルバー。
+- **IsotropicLineageNet / MultiScaleLineageNet(検出+リンク一体型ネットワーク)** ... ネイティブ解像度の3フレーム `(t-1, t, t+1)` を入力に、①細胞中心ヒートマップ、②サブボクセルオフセット、③細胞記述子(Descriptor)用の特徴マップ を出力する3D U-Net風の検出器と、連続2フレームの候補リンクを採点する **関連付けヘッド(Association Head)** を1つのモデルに同居させたネットワーク。MultiScaleはIsotropicの上位版で、時間融合を2スケール化し、学習可能な記述子サンプラーと、グラフ内での速度補正を追加したもの。
+- **Transformer** ... ちょくちょく出てくる抽象度の高いキーワードなんですが、要は、繋がり(このコンペだとedge)を計算する数式モデルの総称。複数個のデータのリストを入力 → 全員を総当たりで見比べて(Attention)、『どれとどれが繋がるか』を計算して返すAI関数(数式モデル)の総称。総称なので、具体的なアルゴリズムは別途存在する。6位解法では「総当たり」ではなく **k近傍の候補リンク上だけでAttentionを回すスパース版(Sparse Graph Attention)** を使っています。
+- **明示的な「新規細胞(new cell)」クラス(null class)** ... 各細胞 $j$ (フレーム $t+1$)について「親候補 $i_1, i_2, \dots$ のどれが親か」をSoftmaxで出すときに、**「親はいない(新規出現)」という選択肢を1つ追加** して一緒に正規化する仕組み。この確率がよく較正(calibrate)されているため、ILPの「出現コスト」にそのまま使えます。
+- **3状態ターゲット(Three-state targets)** ... 検出器の学習で、ボクセルを「①正例(アノテーション中心から3µm以内)」「②検証済み背景(フレーム中央値より暗く、全アノテーションから6µm以上離れている)」「③未知(それ以外)」に分け、③の損失重みを0にする手法。アノテーションされていない97%の細胞を「背景だ」と誤って教えないための工夫です。
+- **Count Prior(細胞数事前分布損失)** ... 未知領域には損失がかからないため、放っておくと検出器はそこで撃ちまくる(過検出する)。そこで「クロップ内のヒートマップ総和(≒予測細胞数)」を、主催者公表の動画ごとの推定細胞数 $N_{est}$ をクロップに按分した値に引き寄せる損失。
+- **Noisy Student / Teacher → Student(教師→生徒 自己学習)** ... 学習済みモデル(教師)で未ラベルデータに擬似ラベルを付け、ノイズ(データ拡張・Dropout等)を加えた状態で新しいモデル(生徒)を学習させる半教師あり学習。6位解法の特徴は、**教師が「1つのネットワーク」ではなく「アンサンブル+再スコアラー+ILP」のパイプライン全体** である点。
+- **メンバー専用エッジ再スコアラー(Member-own re-scorer)** ... 各モデル専用に学習したLightGBM(300本・31葉)で、各細胞の親候補を「確率・順位・マージン・ドリフト補正距離・速度残差・局所密度・競合度」など23特徴から並べ替え直す後段モデル。推論時はLightGBMライブラリを使わず、木をフラット配列化してNumba JITで走らせます。
+- **ドリフト補正距離(Drift-corrected distance)** ... 顕微鏡ステージ自体がフレーム間でズレる(中央値1.3µm, 99パーセンタイル7.3µm)ため、「確信度の高いリンク($P \ge 0.7$)の変位の中央値」をフレーム全体のシフトとして差し引いた後の移動距離。ILPのリンクコストに入れて **+0.009**(検証)。
+- **LP-first ソルバー(`solve_lpfix`)** ... トラッキングILPのLP緩和は「分裂行以外はネットワーク行列(全単模)」なのでほぼ整数解になる。まずHiGHSでLPを解き、整数になった変数を固定し、端数変数とその **3ホップ近傍** だけを小さなMILPで解く。SCIP単体比 **38〜166倍高速**。LP下界とのギャップが0.5%を超えた時だけSCIPにフォールバックします。
+- **Deadline Guard(締切ガード)** ... Kaggleの12時間制限に収めるため、動画を1本処理するたびに直近の処理時間から残り時間を見積もり、「全TTAビュー → 75% → 50% → 1ビュー」の中から間に合う最も豪華な設定を選び直す仕組み。
+- **ペナルティ低減Focal損失(Penalty-reduced focal loss)** ... CornerNet/CenterNetで使われる検出損失。正解中心の周囲にガウシアンを置き、負例側に $(1-y)^\beta$ を掛けて「正解の近くの負例」へのペナルティを弱めるもの。
 - **アブレーションスタディ** ... AIモデルの検証時に、モデルやシステムの各構成要素を一つずつ除去・変更し、それぞれが全体の性能にどの程度寄与しているかを調べる分析手法です。名称は神経科学における脳の一部を除去して機能を調べる実験に由来しています。
-- **BCE** ... Binary Cross-Entropy。BCE損失関数のこと。正式には難解に見える下記数式なんだけど、実はそんな対した意味はない。「Yes(1) か No(0) かの2択クイズ(二値分類)で、モデルの予想確率がどれくらい外れているかを測る損失関数(ペナルティ)」を計算する。
+- **BCE** ... Binary Cross-Entropy。BCE損失関数のこと。正式には難解に見える下記数式なんだけど、実はそんな対した意味はない。「Yes(1) か No(0) かの2択クイズ(二値分類)で、モデルの予想確率がどれくらい外れているかを測る損失関数(ペナルティ)」を計算する。6位解法では「細胞分裂するか?」(division head)の学習に使われています。
 $$L = -\frac{1}{N} \sum_{i=1}^{N} \left[ y_i \log(\hat{y}_i) + (1 - y_i) \log(1 - \hat{y}_i) \right] \newline y_i:正解ラベル(0 \;or\; 1) \newline \hat{y}_i:モデルが予測した確率(0 < \hat{y}_i < 1)\newline ※通常は最終層に Sigmoid 関数を適用した出力 $$
 このままだと難解なままなので、実はしょうもないという説明を。
 $$
@@ -33,182 +37,227 @@ $$
 ## 概要
 先日、Biohub細胞トラッキングコンペが完了しました。
 Private LB 1353位/3800人と大変悔しい結果に終わりましたが、Kaggleの素晴らしいところは、トップ層の解法が公開されることです。
-このお宝を徹底的に解析し、確実に自身のスキルへと昇華させるべく、今回はソロ参加で5位(3,947チーム中5位・金メダル)に入賞された (Tang/hirotetsu)さんの解法を深掘りします。
+このお宝を徹底的に解析し、確実に自身のスキルへと昇華させるべく、今回はソロ参加で6位(金メダル)に入賞された Jamal Saeedi(jamalsaeedi)さんの解法を深掘りします。
 
-5の位解法って、
-1位〜4位の解法がコンペ主催者の公開コードを捨てて、それぞれ独自の専用モジュール(1位のSoon Net、2位のカルマンフィルタ多段審査、3位のFlowNet3D+40個のTensorRT分裂モデル、4位のCellpose移流+261特徴量GBDT+原画像DoG検証器)を構築したのに対し、5位解法はコンペ序盤にコンペ主催者(Royer Lab / Thibaut Goldsborough氏)から公開されてたコード **[UNet + Transformer baseline](https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission) を出発点とし、その単一バックボーン設計を崩さずにどこまで極限まで精度を引き上げられるか** 活かしたアーキテクチャなんですね。
+6位解法って、
+5位解法がコンペ主催者の公開コード(UNet + Transformer baseline)を出発点に「単一バックボーンを磨き上げた」のに対し、6位解法は **ゼロから自作した「検出+リンク一体型ネットワーク」** を軸に、**「正解ラベルが3%しかない」という問題そのものを、パイプライン全体を教師にした自己学習(Teacher → Student)で正面から解きにいった** 解法なんですね。
 
-- 出発点となったコンペ主催者の公開コード(Baseline Notebook)
-https://www.kaggle.com/code/thibautgoldsborough/unet-baseline-inference-submission
-- 5位解法の解説URL
-https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/5th-place-3d-u-net-transformer-linker-multi-s
-- 5位解法 推論コード(Kaggle Kernel)
-https://www.kaggle.com/code/hirotetsu/ctdd-11model-final-v2-ilp1-rematch-adj-off
-- 5位解法 コードデータセット & 学習済み重みデータセット
-https://www.kaggle.com/datasets/hirotetsu/ctdd-final-v2-ilp1-rematch-adj-off-code
-https://www.kaggle.com/datasets/hirotetsu/ctdd-run53-run74-run79-ensemble-code
+コンペの設定をおさらいしておくと、
+- **入力**: 発生中の胚の3D タイムラプス動画。1動画100フレーム、1フレーム `64 × 256 × 256` ボクセル、ボクセル間隔は Z=1.625µm / Y=X=0.406µm の異方性(4:1)、1フレームに最大約400細胞。
+- **出力**: 全フレームの全細胞中心と、時刻 $t$ の細胞から $t+1$ の後継細胞へのリンク。後継が2つなら「分裂」。
+- **評価指標**: 動画ごとのエッジJaccardにノード数ペナルティを掛けたものの重み付き平均+分裂項。
 
-## biohub 5位解法まとめ
+$$J_{adj} = \max\left(0,\; J_{edge} \cdot \left(1 - 0.1\,\frac{N_{pred} - N_{est}}{N_{est}}\right)\right) \qquad \text{score} = \overline{J_{adj}} + 0.1 \cdot J_{div}$$
+
+- **最大の難所**: 訓練199動画に13.3万個の細胞アノテーションがあるが、これは **実在する細胞の約3%** に過ぎず(系譜ごと丸ごと付いている)、分裂は全体でたった151個。
+
+参考URL
+- 6位解法の解説URL(Writeup)
+https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/6th-place-solution
+- 6位解法 推論コード(Kaggle Notebook)
+https://www.kaggle.com/code/jamalsaeedi/biohub-cell-tracking-inference
+- 6位解法 GitHubリポジトリ
+https://github.com/jamal-saeedi/biohub_cell_tracking_kaggle
+- 6位解法 学習済みモデル(Kaggle Models, MIT) & コードデータセット
+https://www.kaggle.com/models/jamalsaeedi/biohub-cell-tracking
+https://www.kaggle.com/datasets/jamalsaeedi/biohub-cell-tracking-kaggle
+
+## biohub 6位解法まとめ
 
 > [!IMPORTANT]
-> **主催ラボ(Biohub / Royer Lab)に、公開データとして「ZebraHub」による教師あり事前学習(+0.016)** のデータが公開されているというね。
-> コンペで配布された訓練データは「画面内の数%の細胞しか正解ラベルが付いていない(疎ラベル、1フレーム最大64個程度)」という制約である一方、主催者(Royer Lab)が一般公開している元データベース 「ZebraHub」(`ZSNS001, 003, 004, 005` の4種) には、3D動画(`.zarr`)だけでなく **「1フレームあたり最大1,024個もの細胞にびっしり正解座標(`nodes`)と追跡・分裂リンク(`edges`)が付いたデータ(`.geff`)」** が公開されていました。
-> そのため、MAEのような画像穴埋め(自己教師あり学習)をするまでもなく、**「ラベル完備のZebraHubで本番とまったく同じタスク・損失関数(`TrackingLoss`)を丸ごと予習(教師あり事前学習)し、その後コンペ訓練データでファインチューニングする」** だけで、Public **+0.014** / Private **+0.016** という決定的な差がついています。
+> **6位解法の設計を決めた2つの観察**
+> 1. **アノテーションは細胞の約3%しかない** → 画像の大部分は「既知の正例」でも「既知の背景」でもない。普通の密な検出ターゲットで学習すると、検出器は **実在する(が未アノテーションの)細胞を抑制するように学習してしまう**。
+> 2. **リンクの誤りの大半は「見た目がそっくりな隣の(未アノテーション)細胞との取り違え(Identity Swap)」**(検証でエッジ誤りの51〜57%)。正解データ(GT)だけではこの誤りは **一切ペナルティを受けない**。また、座標しか見ないリンカーでは見分けられない。
+>
+> そこで、
+> - **1つのネットワークで検出とリンクを行う**(細胞を見つけた画像特徴から、そのままリンク用の記述子を取り出す)
+> - **ネットワークはソルバーがそのまま使える確率を出す**(明示的な「新規細胞」クラス付き)→ 大域的ILPに手作業の修復ルールが不要
+> - **パイプライン全体が次のモデルを教える** → 訓練動画上の追跡結果を、誰もアノテーションしていない97%の細胞の擬似ラベルにする
 
-5位解法の特徴は
-- **「公開ZebraHubデータセット(4種・密ラベル)による教師ありデータに気づけたこと」**
-- **「コンペ主催者の公開コード(3D U-Net + Transformer + ILP)を補足強化するため1つずつ弱点を潰し切ったアプローチ」**
-- **「リンカーへの4出力(Link / Identity / Appearance / Division)の集約」** と **「検出確信度コスト・足場リンク・ギャップ結合を備えた多段ILP(ILP1〜ILP4)」**
+6位解法の特徴は
+- **「検出とリンクを1つのネットワーク(Detector + Sparse Association Head)で同時学習」**
+- **「3状態ターゲット + Count Prior による3%疎ラベル学習」** と **「パイプライン全体(アンサンブル+再スコアラー+ILP)を教師にしたTeacher → Student反復」**
+- **「6モデル共有細胞セット + メンバー専用LightGBM再スコアラー」** と **「ドリフト補正距離付きEvent ILP(LP-first)」**
+- **「T4×2で12時間に収めるための徹底した時間設計(fp16・Encoder Cache・2GPUシャーディング・Deadline Guard)」**
 
 です。
 
-### コンペ主催者の公開コード(`unet-baseline`)と5位解法での改善点
+### 5位解法と6位解法の比較
 
-まず、元のコード(`unet-baseline-inference-submission`)と5位解法(`ctdd-11model-final-v2-ilp1-rematch-adj-off`)がどのように変わったのかを一覧表で比較します。
+どちらも「1つのネットワークで検出とリンク確率を出して、ILPで解く」という同じ系統の解法なので、直前に読んだ5位解法と並べると違いが際立ちます。
 
-| 比較項目 | コンペ主催者の公開コード(`unet-baseline-inference-submission`) | 5位解法 (`ctdd-11model-final-v2-ilp1-rematch-adj-off`) | スコアへの寄与・改善理由 |
+| 比較項目 | 5位解法 (Tang / hirotetsuさん) | 6位解法 (Jamal Saeediさん) | ポイント |
 | :--- | :--- | :--- | :--- |
-| **空間ダウンサンプリング** | スライス間引き `raw[:, ::1, ::4, ::4]`<br>(4ピクセル中3ピクセルを捨てており、エイリアシングと位置ズレが発生) | **3D Average Pooling (`F.avg_pool3d(1, 4, 4)`)**<br>+ ボクセル中心を合わせる座標変換 `(c + 0.5) / s - 0.5` | 4×4領域の全輝度情報を保持し、元の解像度との幾何学的な中心ズレ(最大1.5ボクセル)を完全に解消 |
-| **ピーク座標の精度** | `int16` の整数グリッド座標に丸め込み (`coords[:, 1:] *= ds_arr`) | **対数放物線サブボクセル補正 (`refine_peaks_parabolic`)**<br>+ 最終CSVも小数第3位の `float` で出力 | 4倍縮小グリッドの粗い量子化誤差を解消し、Z軸(1.625µm間隔)の丸めによる `-0.0074` のスコア損失も回避 |
-| **検出損失関数** | アノテーション座標1点のみを正例とする単純BCE(Binary Cross Entropy/BCE損失関数) (`compute_detection_loss`) | **3Dガウシアン($\sigma=1.0$) + CenterNet型Focal損失**<br>(正例・負例を個別にカウント正規化、`det_neg_weight=0.01`) | 疎ラベル(数%のみアノテーション)環境下でもピーク周辺の勾配が滑らかになり、サブボクセル放物線フィットと完全整合 |
-| **リンカーの構造** | `SimpleNodeTransformer`<br>・整数座標の1スケール特徴量(32ch)のみ<br>・フレーム間Cross-Attentionのみ<br>・ピクセル単位の相対座標差 `(c_a - c_b)/100` | **`NodeTransformerV2` (`run74`, `run79`)**<br>・**マルチスケール特徴量**(Head+Decoder+Bottleneck計224/416ch)を精製座標でTrilinear補間抽出<br>・**同一フレーム内Self-Attention** + フレーム間Cross-Attention<br>・**物理単位($\mu\text{m}$)の変位ベクトルとユークリッド距離**を入力 | 同一フレーム内の近傍細胞の競合関係をSelf-Attentionで把握し、異方性ボクセルに惑わされない物理距離ベースのペア採点を実現 |
-| **リンカーの出力ヘッド** | `edge` (リンク確率) の **1種類のみ** | **4種類のマルチタスク出力**:<br>① `edge` (リンク確率)<br>② `identity` (16次元外見ベクトル類似度, InfoNCE/CE損失)<br>③ `appearance` (新規出現確率, `pos_weight=10`)<br>④ `division` (細胞分裂確率, `pos_weight=20`) | **単一で最大の改善(Public +0.020 / Private +0.024)**。稀な分裂や視野流入細胞を専用ヘッドで直接検知し、ILPのノード別コストへ直結 |
-| **学習データ・事前学習** | コンペ訓練データのランダム分割(Split 0)のみ | **4つの公開ZebraHubデータセット(`ZSNS001, 003, 004, 005`)で事前学習** + クリップ種別・分裂数による層化5-fold CV + 人手レビュー分裂データ補強 | **Public +0.014 / Private +0.016**。大規模な完全アノテーション付き外部胚データで表現力を獲得 |
-| **TTA & アンサンブル** | 単一モデル + 検出時のみ4方向フリップTTA (`det_tta`) | **11モデルアンサンブル**(`run53`×5 + `run74`×5 + `run79`×1)<br>× **8方向XY反転・回転TTA(`8fixed`)** を検出・特徴量・リンク・外見類似度の全段階で融合 | 5-foldアンサンブルで **+0.008/+0.007**、8方向TTAで **+0.007/+0.005** の安定した上積み |
-| **トラッキング(ILP)** | `tracksdata` 標準の単発ILP<br>(定数コスト `app=0.1, dis=0.1, div=1.0`、ノードコストなし、閾値 `0.99` 固定) | **検出確信度ノードコスト付き多段ILP**:<br>・低閾値(`0.60`)ノードを採用し確信度でコスト付け(**+0.008/+0.020**)<br>・**ILP1/ILP2**(基本木構築と偽分裂抑制: **+0.003/+0.007**)<br>・**ILP3(`relink_ilp`)**(分岐固定+足場リンク補助再結合)<br>・**ILP4(`close_gaps`)**(2〜10fギャップ結合: **+0.001/+0.002**) | 単発ILPでは不可能な「高再現率(Recall)の確保」と「偽分裂・途切れの防止」を多段階の制約設計で両立 |
-| **軌道平滑化・欠損補間** | なし | **運動保存付き局所直線スムージング(`smooth_track_coords`, ±4f, 重み0.825, 上限4.5µm)** + **1フレーム欠損補間(`fill_track_gaps`)** | **Public +0.004 / Private +0.005**。フレーム全体のドリフトを保護しつつ検出の微小なブレを除去 |
-
----
+| **出発点** | コンペ主催者の公開コード(`unet-baseline`)を改良 | 独自実装(`IsotropicLineageNet` / `MultiScaleLineageNet`) | 6位は時間融合・記述子・ヘッドまで全部自作 |
+| **入力解像度** | 3D AvgPool `(1,4,4)` で `64×64×64` に縮小 | **ネイティブ解像度** `64×256×256` をそのまま入力(リサンプリング・クロップなし) | 6位はネットワーク内部で「横方向だけ2段縮小 → 等方グリッド → 3D縮小」して異方性を処理 |
+| **入力フレーム** | 2フレーム `[t, t+1]` | **3フレーム `[t-1, t, t+1]`** | フレームごとに独立エンコード → 3ウィンドウで再利用 |
+| **時間方向の融合** | 同一ボクセル座標での時間Self-Attention | **変位予測付きサンプリング(Motion/Gated Temporal Fusion)** | 動く細胞を「位置合わせしてから」比較する |
+| **サブボクセル座標** | 対数放物線フィッティング | **オフセットヘッド(±0.5グリッド)を学習** | Smooth L1で直接学習 |
+| **疎ラベル対策** | ZebraHub(密ラベル外部データ)で事前学習 | **3状態ターゲット + Count Prior + パイプライン教師の擬似ラベル(約500万細胞)** | 5位は「外部の密ラベル」、6位は「自前で密ラベルを作る」 |
+| **リンカー** | NodeTransformer(全ペア総当たり Self/Cross-Attn) | **k近傍候補グラフ上のスパース双方向グラフAttention** + 速度・不確実性予測 | 6位は候補を `k=4`・`20µm` に絞ってから採点 |
+| **リンク出力** | edge / identity / appearance / division の4出力 | **親候補Softmax + 新規細胞(null)クラス** / 分裂ロジット / 娘ペア(学習専用) / 速度 | 6位は「出現」をSoftmaxのnullとして同時に正規化 |
+| **リンク後段** | なし(ILPへ直行) | **メンバー専用LightGBM再スコアラー(23特徴)** | Identity Swap対策で +0.004〜0.007/モデル |
+| **アンサンブル** | 11モデル × 8方向TTA | **6モデル × 2〜4ビューTTA(計19ビュー)**、細胞セットは共有 | 6位はマルチスケールモデルの細胞は使わず「リンク意見」だけ使う |
+| **検出閾値とノードコスト** | 閾値0.60 + ノードコスト $-8(q-0.96)$ | 閾値0.50 + ノードコスト $-\text{logit}$(損益分岐 $p=0.5$) | 6位は「閾値を下げると偽細胞が増えるだけ」と検証済み |
+| **ILP** | 多段ILP(ILP1〜ILP4) + LP緩和100-hop厳密MILP | **単発Event ILP** + LP-first(3-hop)→SCIP→貪欲法 | 6位は「全細胞・全出現に値段が付いているので修復不要」 |
+| **ドリフト** | 推論時ドリフト補正は採用見送り | **ドリフト補正距離をリンクコストに採用(+0.009)**、平滑化もドリフト補償(+0.005) | 「細胞だけでなくカメラをモデル化する」 |
+| **平滑化** | 運動保存直線フィット ±4f, w=0.825, 上限4.5µm | ドリフト補償直線フィット **±2f, w=0.8** | 考え方はほぼ同じ |
+| **最終座標** | 小数第3位のfloatで出力 | **整数に丸めて出力**(`submission.py`) | 5位の知見(丸めで -0.0074)からすると伸びしろがあったかも |
+| **LB** | Public 0.971 / Private 0.958 | Public 0.961 / Private 0.953 | |
 
 ```mermaid
 flowchart LR
-    subgraph Baseline["コンペ主催者の公開コード(unet-baseline-inference-submission)"]
-        B1["ストライド間引き読込<br/>z[::1, ::4, ::4]<br/>+ 整数ピーク座標"] --> B2["TemporalUNet3D<br/>+ SimpleNodeTransformer<br/>(edgeリンク確率のみ)"]
-        B2 --> B3["単一ステージILP<br/>(ノードコストなし・固定重み)<br/>+ 整数丸めCSV出力"]
+    subgraph Fifth["5位解法(Tang / hirotetsuさん)"]
+        F1["公式ベースライン改良<br/>3D AvgPool縮小 + 放物線補正<br/>+ ZebraHub事前学習"] --> F2["TemporalUNet3D<br/>+ NodeTransformer v1/v2<br/>(4出力)"]
+        F2 --> F3["11モデル×8TTA<br/>+ 多段ILP(ILP1〜ILP4)<br/>+ 平滑化 & Float出力"]
     end
 
-    subgraph Fifth["5位解法(Tang /hirotetsuさん)"]
-        F1["3D Average Pooling縮小<br/>+ 対数放物線サブボクセル補正<br/>+ ZebraHub事前学習"] --> F2["TemporalUNet3D (ResBlock)<br/>+ NodeTransformer v1/v2<br/>(Edge + Identity + Appear + Div)"]
-        F2 --> F3["8方向TTA × 11モデル融合<br/>+ 多段ILP(ILP1〜ILP4)<br/>+ 運動保存直線平滑化 & Float出力"]
+    subgraph Sixth["6位解法(Jamal Saeediさん)"]
+        S1["ネイティブ解像度3フレーム入力<br/>3状態ターゲット + Count Prior"] --> S2["検出+リンク一体型Net<br/>(Isotropic / MultiScale)<br/>Sparse Graph Attn + nullクラス"]
+        S2 --> S3["6モデル共有細胞 + 専用LightGBM<br/>+ ドリフト補正Event ILP(LP-first)<br/>+ ドリフト補償平滑化"]
+        S3 -.->|"パイプライン全体が教師<br/>(擬似ラベル約500万細胞)"| S1
     end
-
-    Baseline ==>|"弱点を体系的に克服<br/>(LB ~0.79 → 0.971)"| Fifth
 ```
 
-### 「データ・バリデーション・評価指標の観察」からの設計指針7つ
+### 「データ・評価指標の観察」からの設計指針7つ
 
-5位解法(Writeupおよびコード内の詳細な設計コメント)では、データの性質と評価指標の挙動を深く分析し、以下の7つの工夫を実装しています。
+6位解法(Writeupおよびコード内の詳細な設計コメント)では、データの性質と評価指標の挙動を分析し、以下の7つの工夫を実装しています。
 
 | 観点 | 具体的な対応内容 | 対応Stage |
 | :--- | :--- | :---: |
-| **① 訓練データに「重複フレーム」と「巨大ドリフト」が混入している**<br>訓練動画の一部でフレーム $t$ と $t+1$ がバイト単位で完全一致(`DUPLICATE_FRAMES`: 114動画)したり、画像全体が $6\sim 14\text{ µm}$ 以上ジャンプ(`DRIFT_FRAMES`: 116動画)している | **CV評価時における問題フレームエッジの除外 & テストデータのドリフト検証**<br>バリデーション評価では予測・正解の双方から重複フレーム(`DUPLICATE_FRAMES`)と大ドリフトフレーム(`DRIFT_FRAMES`)を出るリンクを除外して正確なCVを計測。一方、LBプローブにより「隠されたテストデータには6µm以上の巨大ドリフトが存在しない」ことを突き止め、推論時のドリフトシフト補正(`drift_compensate`)を敢えてOFFにしてPublic/Private双方の安定性を確保 | Validation,<br>Stage1 |
-| **② Z軸の異方性と減衰によりZ反転TTAは逆効果になる**<br>顕微鏡の光は片側から入るためZ軸深部は暗くなり、解像度もZ(1.625µm)はXY(0.406µm)の4倍粗い | **XY平面限定の8方向対称群TTA(`8fixed`)とバグ修正**<br>Z軸は一切触れず、XY平面の恒等・X反転・Y反転・180°回転・90°回転・270°回転・主対角反転・副対角反転の8ビュー(`D_4` 二面体群)のみを適用。さらに旧モード(`8fliprot`)で8番目がX反転と重複していたバグを修正した `8fixed` を導入 | Stage1 |
-| **③ 高い検出閾値(`0.90`)だけでは薄暗い細胞を見逃してトラックが途切れる**<br>しかし単純に閾値を `0.60` に下げると偽の細胞や偽の分裂が急増する | **ILPのノード確信度コスト(`node_weight`)と多段ILP(ILP1→ILP2)**<br>検出閾値を `0.60` まで下げて候補を広く拾った上で、ILP内で各ノードに `-8.0 * (q - 0.96)` の確信度コストを課す(`q > 0.96` なら報酬、`q < 0.96` ならペナルティ、Private **+0.020**)。さらに高確信度(`0.90`)のILP1に無かった分裂をILP2から除去する仕組み(`filter_track_graph`)を構築 | Stage2,<br>Stage3 |
-| **④ 分裂と新規出現は稀であり、リンク確率だけでは判断できない**<br>1つの親から2つの娘へ確率が分散するためSoftmaxリンク確率が下がり、視野端からの流入細胞も既存トラックに誤吸収されやすい | **NodeTransformerへの `appearance_head` & `division_head` 追加と外見埋め込み(`identity_head`)**<br>正例重みを高めたBCE損失(`appearance_pos_weight=10`, `division_pos_weight=20`)で新規出現と分裂を直接分類。さらに検出器が片方の娘を見逃しても元のGT親の次数(`out_degree == 2`)から分裂ラベルを維持して学習(**+0.020 / +0.024**) | Stage2 |
-| **⑤ 確定した細胞間でも、中程度のリンクや1フレームの弱リンクで繋ぎ間違いが起きる**<br>1度目のILPで選ばれたノード集合の中で、より外見類似度(`id_dissim`)を重視して繋ぎ直す余地がある | **ノード・分岐固定の再リンクILP(`ILP3: relink_ilp`)と足場リンク(`scaffold`)**<br>ILP2で残ったノードと分裂エッジを固定し、確率 $p \in (0.20, 0.25]$ の弱いリンクを「一時的な足場(`scaffold`)」として入れて $\sqrt{p}$ (`gamma=0.5`)と高い外見類似度重み(`idsim=0.7`)で再最適化し、解いた直後に足場リンクを撤去 | Stage3 |
-| **⑥ 数フレームの検出抜けで長いトラックが分断される**<br>1フレームの抜けだけでなく、2〜10フレームにわたって一時的に検出閾値を下回る区間が存在する | **MILPによるギャップ結合(`ILP4: close_gaps`) + 空き検出スナップ + 1フレーム補間(`fill_track_gaps`)**<br>長さ8以上・端点確信度0.85以上のトラック終端と2〜10フレーム後の始端について、速度整合性と距離コストを計算し、途中に未採用の検出点(`free_at`)があれば半径3.5µm以内でスナップさせながら1対1 MILP(`one_to_one`)で結合 | Stage4 |
-| **⑦ 座標の整数丸め(`round`)がZ軸で大きな距離ペナルティを生む**<br>公式評価指標はユークリッド距離マッチングを行うため、フル解像度グリッドでもZ軸を整数に丸めると最大 `0.81 µm` ズレる | **運動保存直線スムージング(`smooth_track_coords`) + 小数第3位Float出力**<br>フレーム全体の共通移動(`motion`)を差し引いた上で前後 `±4` フレームの最小二乗直線と `0.825 : 0.175` でブレンド(最大移動幅 `4.5 µm` 制限)。最終CSVも整数ではなく `round(val, 3)` の浮動小数点で出力し、丸めによる `-0.0074` のスコア低下を完全に防止 | Stage5 |
+| **① アノテーションが3%しかなく、画像の大半は「正例でも背景でもない」**<br>密な検出ターゲットだと未アノテーション細胞を抑制してしまう | **3状態ターゲット + Count Prior**<br>アノテーション中心3µm以内=正例(σ1.5µmガウシアン)、フレーム中央値より暗く全アノテーションから6µm以上=検証済み背景、それ以外=損失0。未知領域での過検出はCount Prior(推定細胞数への引き寄せ)で抑える | 学習 |
+| **② GTだけでは「隣の未アノテーション細胞への誤リンク」が罰せられない** | **パイプライン全体を教師にしたTeacher → Student**<br>ILPの解のトポロジー(argmaxより高精度: 0.949 vs 0.885)と生検出座標から擬似ラベルを作り、`L = L_GT + 0.5·L_pseudo` で学習。最初の1周だけで **+0.008**(検証) | 学習 |
+| **③ 異方性4:1、Z軸は光の減衰で方向性がある** | **ネットワーク内で異方性を解消 + 横方向のみのD4 TTA/拡張**<br>横方向だけ2段縮小 → 1.625µmの等方グリッド → 3D縮小(3.25µm)。Z反転は学習でも推論でも一切しない | Stage1, 学習 |
+| **④ 「新規出現」と「リンク」を別々に予測すると較正がズレる** | **親候補Softmaxに明示的な「新規細胞」クラス**<br>学習時に親の15%を意図的に削除して「新規細胞」ラベルを付け、nullクラスを教える。推論ではこの確率がそのままILPの出現コストに | Stage2, Stage4 |
+| **⑤ 誤りの最大要因は隣接細胞とのIdentity Swap(51〜57%)** | **メンバー専用LightGBM再スコアラー**<br>ヘッドが見ていない幾何情報(親側の競合度、局所密度、ドリフト補正後の動き)で親候補を再ランク。nullの確率は変えないので出現コストはそのまま | Stage3 |
+| **⑥ 顕微鏡ステージがフレーム間でドリフトし(中央値1.3µm/p99 7.3µm)、Swapはそのフレームに集中** | **「カメラをモデル化」**: ソルバーではドリフト補正距離(+0.009)、平滑化ではドリフト補償(+0.005)、学習では最大6µm/ステップの合成ドリフト拡張 | Stage4, Stage5, 学習 |
+| **⑦ Kaggle T4×2・12時間で6モデル×TTAを回す必要がある** | **fp16(T4にネイティブbf16が無い: 3.5倍速)、Encoder Cache(1.4〜1.9倍速)、GPUごとのワーカー+共有キュー、Deadline Guard、多段フォールバック** | Stage0 |
 
 ---
 
 ## プロジェクト構成
 
-5位解法のリポジトリ(`5thPlaceSolution`)は、Kaggle提出エントリスクリプト(`ctdd-11model-final-v2-ilp1-rematch-adj-off.py`)、コア推論・学習コード(`ctdd-final-v2-ilp1-rematch-adj-off-code/`)、全11モデルの学習済みチェックポイント(`ctdd-run53-run74-run79-ensemble-code/`)、および比較用の公開ベースライン一式(`unet_baseline_inference.py`, `cellmot-baseline-artifacts/`)から構成されています。
+6位解法のリポジトリ(`6thPlaceSolution`)は、Kaggle提出エントリスクリプト(`biohub-cell-tracking-inference.py`)と、`pip install` 可能なパッケージ形式の公式リポジトリ(`biohub_cell_tracking_kaggle/`)、Kaggle Modelsから取得したSHA-256検証済みの重み一式(`models/`)から構成されています。推論コードだけでなく、**学習・擬似ラベル生成・再スコアラー学習まで含めた全学習系譜(レシピ)** が公開されているのが特徴です。
 
 ```text
-5thPlaceSolution/
-├── ctdd-11model-final-v2-ilp1-rematch-adj-off.py  # 5位解法 Kaggle/ローカル両対応 推論エントリスクリプト
-├── ctdd-final-v2-ilp1-rematch-adj-off-code/       # 5位解法 コアコードデータセット (SHA-256検証対象: 全17ファイル)
-│   ├── config.py                                  # BaseConfig / InferConfig / SubmitConfig / TrainConfig / 問題フレーム定義
-│   ├── dataset.py                                 # CompetitionDataset, ZebraHubDataset, HumanDivisionDataset, load_volume()
-│   ├── models.py                                  # TrackingLoss, TemporalUNet3D, NodeTransformer(v1/v2), MyUnet
-│   ├── inference.py                               # predict_clip(), predict_graph_gpu(), solve_graph(), run_clips()
-│   ├── inference_fast.py                          # InferenceUNetRunner(OOM自動チャンク縮小), run_scheduled(GPU/CPU非同期並列)
-│   ├── utils.py                                   # 放物線ピーク補正, 8方向TTA, HighsILPSolver, ILP1~4, 平滑化, CSV出力
-│   └── vendor/repo/                               # ベンダー同梱の公式ベースライン拡張パッケージ
-│       ├── scripts/
-│       │   ├── augmentations.py                   # 3D明暗シフト・ガンマ補正・XY反転回転データ拡張
-│       │   ├── dataspec.py                        # データセットパス・定数定義
-│       │   └── train_unet_transformer.py          # ベースライン学習ループ・位置エンコーディング・検出マッチング
-│       └── src/tracking_cellmot/
-│           ├── io.py / img_proc.py                # Zarr / GEFF グラフ入出力・時間反転処理
-│           ├── metrics.py / division_metrics.py   # 公式評価指標 (Adjusted Edge Jaccard + 0.1 * Division Jaccard)
-│           └── models/
-│               ├── temporal_unet.py               # ベースライン TemporalUNet3D
-│               └── simple_node_transformer.py     # CrossAttentionBlock & SimpleNodeTransformer
-├── ctdd-run53-run74-run79-ensemble-code/          # 5位解法 学習済み重みデータセット (SHA-256検証対象: 全11モデル)
-│   └── models/
-│       ├── run53/fold_0..4/                       # Group 1: Plain TemporalUNet3D(32,64,128) + NodeTransformer v1 (5 models)
-│       ├── run74/fold_0..4/                       # Group 2: Plain TemporalUNet3D(32,64,128) + NodeTransformer v2 (5 models)
-│       └── run79/fold_0/                          # Group 3: Residual TemporalUNet3D(64,128,256) + NodeTransformer v2 (1 model)
-├── cellmot-baseline-artifacts/                    # コンペ主催者の公開コードのコード & 重み (edge_predictor_best.pth)
-├── unet-baseline-inference-submission.ipynb       # コンペ主催者の公開コード 推論ノートブック原本
-├── unet_baseline_inference.py                     # コンペ主催者の公開コード ローカル・Kaggle両対応推論スクリプト
-├── verify_local_env.py                            # 環境・GPU・全28ファイルSHA-256ハッシュ・モデルロード検証スクリプト
-├── input/test/                                    # テスト用Zarr動画データ (4動画)
-├── working/                                       # 推論作業ディレクトリ (predictions/*.geff, submission.csv)
-├── requirements.txt                               # 仮想環境再現用パッケージ定義
-└── README_LOCAL.md                                # ローカル環境構築・実行ガイド
+6thPlaceSolution/
+├── biohub-cell-tracking-inference.py           # 6位解法 推論エントリスクリプト(Kaggle/ローカル両対応, --variant fin/best)
+├── biohub-cell-tracking-inference.ipynb        # 元のKaggle推論ノートブック
+├── biohub_cell_tracking_kaggle/                # 6位解法 公式GitHubリポジトリ(パッケージ: biohub_tracking)
+│   ├── docs/                                   # SOLUTION.md(Writeup原文), MODEL_SUMMARY.md, figures/
+│   ├── recipes/
+│   │   ├── train/*.json                        # 全14学習ランのレシピ(W-link-s2 → … → GX-ms-lc-s7)
+│   │   └── ensembles/*.json                    # 教師アンサンブル(v10/v11)と提出アンサンブル(fin/best)の定義
+│   ├── src/biohub_tracking/
+│   │   ├── cli.py                              # biohub-predict: run(), summarize()
+│   │   ├── recipe.py                           # VARIANTS(fin/best の6チェックポイント+6再スコアラー, SHA-256)
+│   │   ├── settings.py / submission.py         # パス設定 / CSV書き出し・検証
+│   │   ├── labels.py                           # biohub-pseudo-labels: 教師パイプラインによる擬似ラベル生成
+│   │   ├── ensembles.py                        # アンサンブル仕様(JSON) → IsotropicConfig
+│   │   ├── models/
+│   │   │   ├── isotropic_lineage.py            # IsotropicLineageNet, MotionTemporalFusion, LineageAssociationHead
+│   │   │   └── multiscale_lineage.py           # MultiScaleLineageNet, GatedTemporalFusion, LearnedDescriptorSampler, RefiningAssociationHead
+│   │   ├── isotropic/                          # 推論エンジン
+│   │   │   ├── config.py                       # IsotropicConfig(提出レシピのデフォルト値)
+│   │   │   ├── pipeline.py                     # run_pipeline(), minimal_repair(), smooth_positions()
+│   │   │   ├── shard.py                        # マルチGPUワーカー, 共有キュー, Deadline Guard
+│   │   │   ├── predict.py                      # TTA, EncoderCache, decode_movie(), predict_movie(), 再スコア融合
+│   │   │   ├── decode.py / volumes.py          # ウィンドウ計画, NMS, 正規化
+│   │   │   ├── graph.py                        # k-NN候補リンク, associate_pair()
+│   │   │   ├── edge_rescorer.py                # 23特徴, TreeEnsemble(Numba木探索)
+│   │   │   ├── solver.py / lpfix.py            # Event ILP, ドリフト補正距離, LP-first ソルバー
+│   │   │   ├── fallback.py                     # モデル無しトラッカー(DoG検出 + 最近傍リンク)
+│   │   │   └── kaggle.py / checkpoint.py       # 環境ブートストラップ, 実行計画 / チェックポイント読込
+│   │   ├── postprocess/smoothing.py            # 直線フィット平滑化
+│   │   └── training/                           # 3状態ターゲット, 損失, データ拡張, 擬似ラベル統合, LightGBM学習
+│   └── tools/                                  # download_models.py, smoke_test.py, reproduce_training.sh 等
+├── models/
+│   ├── mres-fin-444322/1/                      # 最終選択提出(fin): 6モデル + 6再スコアラー
+│   └── mres-best-444322/1/                     # 最良検証チェックポイント(best): 6モデル + 6再スコアラー
+├── input/test/                                 # 公開テスト用 4動画(*.zarr)
+├── working/                                    # predictions/*.geff, submission.csv
+├── SETTINGS.json                               # 入出力パス設定
+├── verify_local_env.py                         # 環境・GPU・全24ファイルSHA-256・モデルロード・Numba・HiGHS検証
+└── README_LOCAL.md                             # ローカル環境構築・実行ガイド
 ```
 
-### 主要モデル・重み一覧(11モデルアンサンブル + ソルバー群)
+### 主要モデル・重み一覧(6モデルアンサンブル + 6再スコアラー)
 
-5位解法は、アーキテクチャとチャネル幅が異なる **3世代・計11個のEnd-to-Endモデル(`MyUnet`)を均等重みでアンサンブル** し、各モデルに8方向TTA(`8fixed`)を適用することで、1フレームペアあたり実質 **$11 \times 8 = 88$ ビュー** の予測を統合しています。
+6位解法は、**2種類のアーキテクチャ・6個のモデル** をアンサンブルします。各モデルは **それぞれ別のランダムな動画分割(train 165本/val 30本)** で学習されており、間違え方がバラバラになるよう設計されています。
 
-| カテゴリ | 使用Stage | モデル群・重みファイル | アーキテクチャ / 規模 | 役割・機能 |
-| :--- | :---: | :--- | :--- | :--- |
-| **Model Group 1 (`run53`)** | **Stage1, 2** | `run53/fold_0/epoch_035.pth`<br>`run53/fold_1/epoch_025.pth`<br>`run53/fold_2/epoch_020.pth`<br>`run53/fold_3/epoch_028.pth`<br>`run53/fold_4/epoch_028.pth` | **Plain `TemporalUNet3D`**<br>`layers=(32, 64, 128)`, `out=32`<br>+ **`NodeTransformer` (v1)**<br>(`feat_dim=80`, 整数ピーク特徴サンプリング) | **第1世代 5-foldモデル群:** 32chのフル解像度U-Netヘッド特徴量 + 16次元Identity埋め込み + 32次元Fourier位置特徴(計80次元)を入力とし、双方向Cross-Attention(4層)で4出力(`edge, identity, appearance, division`)を予測。 |
-| **Model Group 2 (`run74`)** | **Stage1, 2** | `run74/fold_0/epoch_027.pth`<br>`run74/fold_1/epoch_030.pth`<br>`run74/fold_2/epoch_024.pth`<br>`run74/fold_3/epoch_025.pth`<br>`run74/fold_4/epoch_025.pth` | **Plain `TemporalUNet3D`**<br>`layers=(32, 64, 128)`, `out=32`<br>+ **`NodeTransformerV2` (v2)**<br>(`feat_dim=272`, マルチスケールTrilinearサンプリング) | **第2世代 5-foldモデル群:** 放物線補正後のサブボクセル座標にて、Head(32ch) + 中間Decoder(64ch) + Bottleneck(128ch)の**マルチスケール特徴量(計224ch)**を `F.grid_sample` で抽出。フレーム内Self-Attention + フレーム間Cross-Attention + 物理変位(`µm`)で高精度リンク予測。 |
-| **Model Group 3 (`run79`)** | **Stage1, 2** | `run79/fold_0/epoch_024.pth` | **Residual `TemporalUNet3D`**<br>`layers=(64, 128, 256)`, `out=32`<br>+ **`NodeTransformerV2` (v2)**<br>(`feat_dim=464`, 広帯域マルチスケール特徴) | **第3世代 大容量モデル:** U-Netの全ブロックを残差接続(`_ResidualConvBlock`)に刷新し、チャネル幅を2倍(`64, 128, 256`)に拡大。ZebraHub事前学習(`run77`)からファインチューニングされ、Head(32ch)+Decoder(128ch)+Bottleneck(256ch)=**416chのマルチスケール特徴**を抽出。 |
-| **Global ILP Solver** | **Stage3** | `utils.py::HighsILPSolver`<br>`utils.py::solve_ilp`<br>`utils.py::relink_ilp` | `tracksdata` + `SciPy milp (HiGHS)`<br>(LP緩和 + 100-hop近傍厳密MILP) | **多段大域的トラッキング(ILP1〜ILP3):** 検出確信度コスト、外見非類似度コスト、新規出現・分裂コストを統合した目的関数を大域的に最小化。`relink_ilp`(ILP3)では分岐とノードを固定し、足場リンクを用いて再結合。 |
-| **Gap & Trajectory Repair** | **Stage4, 5** | `utils.py::close_gaps` (ILP4)<br>`utils.py::smooth_track_coords`<br>`utils.py::fill_track_gaps` | 1対1割当MILP (`one_to_one`)<br>+ 運動保存付き局所最小二乗直線フィット | **ギャップ結合・平滑化・欠損補間:** 2〜10フレームの途切れを空き検出スナップ付きMILPで結合(ILP4)し、フレーム全体の共通運動を保護しながら前後 `±4` フレームの直線フィットで平滑化後、1フレーム欠損を補間。 |
+| | モデル(run名) | アーキテクチャ | ch / linker幅×層 | パラメータ | 学習の経緯 | TTAビュー |
+|---|---|---|---|---:|---|---:|
+| **A**(primary) | `R3-ft24-noisy-lc-s1` | Isotropic | 48 / 192×3 | 2.47M | 3周目のTeacher → Student | 4 |
+| **B** | `B3-v11-ft32-noisy-lc-s31` | Isotropic(wide) | 64 / 256×3 | 4.38M | アンサンブル教師ラベルで2回ファインチューニング | 4 |
+| **C** | `D2-v11-ft32-noisy-lc-s33` | Isotropic(wide+deep) | 64 / 256×4 | 4.78M | v10ラベルで学習、v11でファインチューニング | 4 |
+| **D** | `EX-ms-lc-s5` | MultiScale | 64 / 256×4 | 5.68M | アンサンブル教師ラベルでスクラッチ学習 | 3 |
+| **E** | `FX-ms-lc-s6` | MultiScale | 64 / 256×4 | 5.68M | 同上 | 2 |
+| **F** | `GX-ms-lc-s7` | MultiScale | 64 / 256×4 | 5.68M | 同上(32epoch予定のうち24で停止) | 2 |
+
+- **`fin`(最終選択)**: B〜Eは最終チェックポイント(`last`)。Public 0.961 / **Private 0.953**
+- **`best`**: B〜Eは検証損失最良チェックポイント。Public 0.958 / Private 0.955
+- AとFは両バリアント共通。再スコアラーは各バリアント専用に6個ずつ(`MRES-FIN-444322-m0..m5` / `MRES-BEST-444322-m0..m5`)。
+- 全24ファイル(6チェックポイント+6再スコアラー×2バリアント)は `recipe.py::VARIANTS` (L49-L104) にSHA-256が固定されており、読み込み前に `verify_variant()` (L124-L132) で検証されます。
+
+| コンポーネント | A (Iso, c48, h192, L3) | B (Iso, c64, h256, L3) | C (Iso, c64, h256, L4) | D〜F (MultiScale) |
+|---|---:|---:|---:|---:|
+| エンコーダ(stem → coarse) | 0.78M | 1.39M | 1.39M | 1.61M |
+| 時間融合 | 0.51M | 0.91M | 0.91M | 1.13M(coarse 0.90 + iso 0.23) |
+| デコーダ・アダプタ・中心/オフセットヘッド | 0.28M | 0.50M | 0.50M | 0.72M |
+| 関連付けヘッド | 0.90M | 1.59M | 1.99M | 2.22M |
+| うち娘ペアヘッド(学習専用) | 0.11M | 0.20M | 0.20M | 0.20M |
+| **合計** | **2.47M** | **4.38M** | **4.78M** | **5.68M** |
+
+> [!NOTE]
+> 1位〜5位の解法と比べると、**1モデルあたり2.5〜5.7Mパラメータと非常に小さい** のが印象的です。その分、TTAとアンサンブル、そして擬似ラベルによる「データ側の強化」で精度を稼いでいます。
 
 ---
 
-## 5位解法の全体像
+## 6位解法の全体像
 
-5位解法の推論パイプラインは、大きく分けて以下の6つのStageで構成されています。
-- **Stage0**. Main & Fast Scheduling(SHA-256整合性検証、OOM自動チャンク制御、GPU予測とCPU後処理の非同期オーバーラップ実行)
-- **Stage1**. 等方性3D Average Pooling前処理と `TemporalUNet3D` (11モデル×8方向TTA) による細胞中心検出・対数放物線サブボクセル補正
-- **Stage2**. マルチスケール特徴サンプリングと `NodeTransformer(v1/v2)` による4要素(Link / Identity / Appearance / Division)予測・融合
-- **Stage3**. 検出確信度ノードコスト付き多段ILPトラッキング(ILP1 / ILP2 / ILP3 `relink_ilp`)
-- **Stage4**. トラック修復ステージ(ILP4 `close_gaps` による2〜10フレームのギャップ結合と空き検出スナップ)
-- **Stage5**. 運動保存付き局所直線スムージング(`smooth_track_coords`)、1フレーム欠損補間(`fill_track_gaps`)、およびサブボクセルFloat CSV出力
+6位解法の推論パイプラインは、大きく分けて以下の6つのStageで構成されています。
+- **Stage0**. Main & マルチGPUスケジューリング(SHA-256検証、GPUごとのワーカー+共有キュー、Deadline Guard、多段フォールバック)
+- **Stage1**. ネイティブ解像度3フレームウィンドウのデコード(フレーム正規化、Encoder Cache、6モデル×TTA、**共有細胞セット**の抽出)
+- **Stage2**. k-NN候補リンクと、各モデル自前の **関連付けヘッド** による採点(親候補Softmax + 新規細胞クラス、分裂ロジット、速度)
+- **Stage3**. **メンバー専用LightGBM再スコアラー** による親候補の再ランクと、6モデルの確率平均
+- **Stage4**. **ドリフト補正距離付き Event ILP**(温度付きSoftmax、LP-first → SCIP → 貪欲法)
+- **Stage5**. 構造制約の最小修復、**ドリフト補償直線スムージング**、ボリューム内クランプ、CSV書き出しと検証
 
 ```mermaid
 flowchart TD
-    Input["入力: 3D+t 顕微鏡動画ボリューム<br/>(T=100, Z=64, Y=256, X=256)"] --> S1
+    Input["入力: 3D+t 顕微鏡動画<br/>(T=100, Z=64, Y=256, X=256) ネイティブ解像度"] --> S1
 
-    subgraph S1["Stage1: 前処理 & 3D U-Net 細胞検出 (GPU)"]
+    subgraph S1["Stage1: 3フレームデコード & 共有細胞セット (GPU)"]
         direction TB
-        P1["3D Average Pooling (1, 4, 4) で等方性 (64×64×64) へ縮小<br/>+ 0.1〜99.9% 分位点正規化"] --> P2["8方向XY TTA (8fixed) × 11モデル TemporalUNet3D<br/>(run53×5, run74×5, run79×1)"]
-        P2 --> P3["88ビュー平均確率マップ → 5.0µm (3×3×3) MaxPool NMS<br/>+ 対数放物線サブボクセル座標補正 (refine_peaks_parabolic)"]
+        P1["フレームごとに min-max → z-score 正規化"] --> P2["Encoder Cache: 各フレームを (モデル, ビュー) ごとに1回だけエンコード"]
+        P2 --> P3["6モデル × 横方向回転TTA (4,4,4,3,2,2ビュー) で<br/>中心ロジット・オフセットをロジット空間で平均"]
+        P3 --> P4["NMS (3×5×5, p≥0.5) + サブボクセルオフセット<br/>→ 全モデル共通の細胞セット"]
     end
 
-    S1 -->|"検出ノード (p > 0.60)<br/>& マルチスケールU-Net特徴マップ"| S2
+    S1 -->|"共有細胞 + 各モデル自前の記述子"| S2
 
-    subgraph S2["Stage2: Transformer 4出力リンカー & 外見埋め込み (GPU)"]
-        L1["マルチスケール特徴量抽出 (v1: 整数座標32ch / v2: 精製座標Trilinear 224〜416ch)<br/>+ 16次元 Identity Embedding + 32次元 4D Fourier 位置特徴"] --> L2["NodeTransformer (v1 / v2: フレーム内Self-Attn + フレーム間Cross-Attn)<br/>11モデル × 8方向TTA で以下の4出力を融合:<br/>① リンク確率 edge_prob (Softmax)<br/>② 外見非類似度 id_dissim (1 - cos)<br/>③ 新規出現確率 appearance_prob (Sigmoid)<br/>④ 細胞分裂確率 division_prob (Sigmoid)"]
+    subgraph S2["Stage2: 関連付けヘッド (GPU, モデルごと)"]
+        A1["k-NN候補リンク (k=4 双方向, 20µm以内)"] --> A2["Sparse双方向グラフAttention<br/>→ 親候補Softmax + 新規細胞クラス<br/>+ 分裂ロジット + 速度"]
     end
 
-    S2 -->|"全フレームペアの候補グラフ<br/>(edge_prob > 0.20)"| S3
+    S2 -->|"6モデル分のリンク意見"| S3
 
-    subgraph S3["Stage3: 多段ILP大域的トラッキング (CPU: HiGHS MILP)"]
-        I1["【ILP1 (基準木 / オプション)】高確信度ノード(p>0.90)のみで求解"] -.->|"偽分裂フィルタ<br/>(filter_track_graph)"| I2
-        I2["【ILP2 (メイン構築)】低閾値ノード(p>0.60) + 候補エッジ(p>0.35)<br/>ノード確信度コスト -8(q-0.96) + 外見非類似度(0.5) + 個別出現・分裂コストで求解"] --> I3["【ILP3 (relink_ilp)】ILP2の採用ノードと分裂分岐を完全固定<br/>弱リンク(0.20 < p <= 0.25)を足場(scaffold)として追加し、<br/>p^0.5 + 高外見重み(0.7) + 高消失ペナルティ(3.5)で再リンク後に足場を撤去"]
+    subgraph S3["Stage3: メンバー専用再スコアラー (CPU, Numba)"]
+        R1["23特徴 → 各モデル専用LightGBM で親候補を再ランク<br/>(nullの確率は維持)"] --> R2["6モデルの親分布を確率空間で平均"]
     end
 
-    S3 -->|"再リンク済みトラック木"| S4
+    S3 --> S4
 
-    subgraph S4["Stage4: ギャップ結合・修復 (CPU: ILP4)"]
-        G1["【ILP4 (close_gaps)】2〜10フレーム離れたトラック終端と始端(長さ>=8, q>=0.85)を探索<br/>距離・速度不整合・欠損ペナルティを計算し、未採用の検出点(free_at)へスナップ(半径3.5µm)<br/>1対1割当MILP(one_to_one)で最適結合"]
+    subgraph S4["Stage4: Event ILP (CPU)"]
+        I1["温度 T=0.9 で再正規化 + ドリフト補正距離"] --> I2["コスト: 細胞 -logit / 出現 -logP(null)+0.5 / 消失 12<br/>分裂 max(0,-logit) / リンク -logP + 0.2×距離"]
+        I2 --> I3["LP-first (HiGHS LP → 3-hop MILP)<br/>→ ギャップ>0.5%ならSCIP → 失敗時は貪欲法"]
     end
 
-    S4 -->|"ギャップ結合済みトラック木"| S5
+    S4 --> S5
 
-    subgraph S5["Stage5: 運動保存スムージング & 1フレーム補間 & 出力"]
-        SM1["smooth_track_coords: 非分岐リンク変位の中央値から全体ドリフト(motion)を除去<br/>→ 前後±4フレームの最小二乗直線と 0.825:0.175 ブレンド(最大シフト4.5µm制限) → ドリフト復元"] --> SM2["fill_track_gaps: 残った1フレーム欠損を速度残差(<=3.0µm)・衝突回避付きで中点補間"]
-        SM2 --> Output["最終提出ファイル出力 (submission.csv)<br/>※Z軸の量子化誤差を防ぐため小数第3位(Float)で座標出力"]
+    subgraph S5["Stage5: 後処理 & 出力"]
+        O1["minimal_repair: 入次数≤1・出次数≤2・連続フレームのみ"] --> O2["ドリフト補償 直線フィット平滑化 (±2f, w=0.8)"]
+        O2 --> O3["ボリューム内クランプ → submission.csv 書き出し & 検証"]
     end
 ```
 
@@ -216,460 +265,634 @@ flowchart TD
 
 ## パイプラインの詳細解説
 
-### ◆Stage0. Main処理(OOM管理・GPU/CPU非同期並列)
+### ◆Stage0. Main処理(マルチGPUスケジューリング・Deadline Guard・フォールバック)
 
-メイン処理(`ctdd-11model-final-v2-ilp1-rematch-adj-off.py`)で並列処理を制御します。
+メイン処理(`biohub-cell-tracking-inference.py`)は非常に薄く、実処理はパッケージ側の `cli.run()` → `pipeline.run_pipeline()` に委譲されています。
 
-1. **大容量モデルを優先実行してAttention重みは破棄 (`inference_fast.py`, L30-L89)**:
-   - **`model_execution_order()` (L78-L88)**: 11モデルのうち、チャネル幅が2倍(`64, 128, 256`)でVRAM消費が最大の `run79`(Residual U-Net)を**他のモデルの特徴マップより先に実行**して、アンサンブル平均をとる際は元のモデル順序(`[0..10]`)に格納することで、数値結果を変えずにピークVRAMを削減しています。
-   - **`fast_model_context()` (L41-L76)**: 推論時、すべての `CrossAttentionBlock` の `forward` メソッドを一時的にモンキーパッチし、MultiheadAttentionの `need_weights=False` を強制することで不要なAttention行列のメモリ確保を省きます。
-2. **OOM時縮小実行 (`InferenceUNetRunner`, `inference_fast.py` L131-L224)**:
-   - 8方向TTAの8ビューを一括バッチ(`batch_size = 8`)で3D U-Netに入力しますが、もしVRAM不足で `torch.OutOfMemoryError` が発生した場合、例外スコープで、一旦テンソルを解放・`torch.cuda.empty_cache()` 。チャンクサイズを **`8 → 4 → 2 → 1`** と半分に縮小後リトライ実行。これにより、8GB VRAMのローカルGPU(RTX 4060等)でも8ビューすべてを完走させます。
-3. GPU/CPU非同期 (`run_scheduled`, `inference_fast.py` L226-L346)**:
-   - 各GPUワーカースレッドは内部に `ThreadPoolExecutor(max_workers=1)` のCPUスレッドを持ち、**「クリップ $i$ のCPU多段ILP求解(`solve_save`)」と「次のクリップ $i+1$ のGPUニューラル推論(`predict_graph_gpu`)」を完全にオーバーラップして並列実行**します。
+1. **環境セットアップと設定・SHA-256検証 (`biohub-cell-tracking-inference.py` L30-L145)**:
+   - Kaggle上ではコードデータセット内のwheel(`biohub_tracking-*.whl`)を `pip install --no-index` し、ローカルでは `biohub_cell_tracking_kaggle/src` を `sys.path` に追加します(`setup_environment()`, L30-L72)。
+   - `shipped_config(variant)` (`recipe.py` L135-L151) が `IsotropicConfig()` のデフォルト値(=提出レシピ)に、選んだバリアントの6チェックポイントと6再スコアラーを取り付けて返します。このとき全ファイルのSHA-256を検証します。
+   - CUDA初期化前に `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を設定し、8〜16GB GPUでの断片化OOMを防いでいます(L19)。
+2. **GPUごとに1ワーカー + ファイルシステムの共有キュー (`shard.py` L38-L65, L165-L264)**:
+   - 各ワーカーは別プロセス(ノートブックのセルは `spawn` できないため `subprocess.Popen`)で起動され、設定はJSONで受け取ります。
+   - キューは `<順位>__<動画名>.pending` という空ファイルの集まりで、ワーカーは `os.rename(... .pending → .claimed)` で1本ずつ動画を取ります。**`os.rename` はアトミック** なので、競合に負けた側は `OSError` になって次を探すだけ。速いGPUが自然に多くの動画を処理します。
+   - 動画は `frames × Z × Y × X` の大きい順に並べられ(`movie_weight()`)、重い動画から先に処理されます。
+3. **Deadline Guard (`shard.py` L68-L131)**:
+   - 動画を処理するたびに、直近5本の「デコード時間」と「それ以外の時間」の中央値から1本あたりの所要時間を推定し、`(全ビュー, 75%, 50%, 1ビュー)` のラダーから **締切に間に合う最も豪華な設定** を選び直します(`guard_pick()`, L101-L119)。
+   - デコードコストは「モデル数 + TTAビュー数の合計」に比例するとモデル化(`guard_cost_ratio()`, L94-L98)。安全係数は1.05。
+   - 後処理・CSV書き出し・失敗動画の再実行用に、最低30分(動画数に応じて増加)を確保します(`post_reserve_seconds()`, L124-L131)。
+4. **「全動画に必ず予測を出す」多段フォールバック (`shard.py` L267-L293, `pipeline.py` L198-L223)**:
+   - 失敗した動画は次に安い設定で再試行 → 1ビュー(`degraded_config`) → primaryモデル単体(`primary_only_config`) → **モデル無しトラッカー**(DoG検出+ドリフト補正最近傍リンク, `fallback.py`) → 最後はプレースホルダ1ノード、と段階的に落とします。
+5. **ILPの時間予算 (`predict.py` L651-L656)**: 各動画のILPには `0.3 × 残りセッション時間 / 残り動画数`(最低30秒)のタイムアウトが割り当てられます。
 
 #### Stage0. フローチャート
 
-$$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main処理} \\ &\text{\small \texttt{ctdd-11model-final-v2-ilp1-rematch-adj-off.py(L64-L208)}, \texttt{inference\_fast.py(L226-L346)}} \end{aligned} } \\
+$$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main処理} \\ &\text{\small \texttt{biohub-cell-tracking-inference.py(L75-L170)}, \texttt{cli.py::run(L18-L56)}, \texttt{shard.py::predict\_sharded(L165-L264)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage1. 等方性3D Average Pooling \& 11モデル×8方向TTA 細胞中心検出} \\ &\text{\small ・呼び出し元: \texttt{inference.py::predict\_graph\_gpu(L340-L364)} $\rightarrow$ \texttt{predict\_clip(L33-L276)}} \\ &\text{\small ・前処理 \& TTA: \texttt{dataset.py::load\_volume(L510-L539)}, \texttt{utils.py::do\_tta / undo\_tta(L281-L320)}} \\ &\text{\small ・3D U-Net \& 放物線補正: \texttt{models.py::TemporalUNet3D(L226-L299)}, \texttt{utils.py::refine\_peaks\_parabolic(L189-L219)}} \end{aligned} } \\
+\boxed{ \begin{aligned} &\textbf{Stage1. 3フレームデコード \& 共有細胞セット} \\ &\text{\small ・\texttt{predict.py::decode\_movie(L251-L306)}, \texttt{EncoderCache(L196-L238)}, \texttt{\_tta\_forward(L134-L175)}} \\ &\text{\small ・\texttt{decode.py::window\_plan(L44-L60)}, \texttt{peak\_indices(L63-L93)}, \texttt{decode\_frames(L103-L152)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage2. マルチスケール特徴抽出 \& NodeTransformer(v1/v2) 4出力リンク予測} \\ &\text{\small ・呼び出し元: \texttt{inference.py::predict\_clip(L219-L316)} (\texttt{fuse\_links}, \texttt{embed\_identities})} \\ &\text{\small ・実行: \texttt{models.py::MyUnet.sample\_node\_features(L534-L551)} $\rightarrow$ \texttt{NodeTransformer / V2(L301-L475)}} \end{aligned} } \\
+\boxed{ \begin{aligned} &\textbf{Stage2. k-NN候補リンク \& 関連付けヘッド} \\ &\text{\small ・\texttt{graph.py::candidate\_edges\_kdtree(L44-L87)}, \texttt{associate\_pair(L90-L140)}} \\ &\text{\small ・\texttt{isotropic\_lineage.py::LineageAssociationHead(L282-L350)}, \texttt{parent\_log\_probabilities(L253-L264)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage3. 検出確信度ノードコスト付き多段ILP (ILP1 / ILP2 / ILP3 relink)} \\ &\text{\small ・呼び出し元: \texttt{inference.py::solve\_graph(L366-L390)} (CPUスレッドで非同期実行)} \\ &\text{\small ・実行: \texttt{utils.py::HighsILPSolver(L452-L523)}, \texttt{solve\_ilp(L533-L572)}, \texttt{relink\_ilp(L912-L959)}} \end{aligned} } \\
+\boxed{ \begin{aligned} &\textbf{Stage3. メンバー専用再スコアラー \& 確率平均} \\ &\text{\small ・\texttt{predict.py::fuse\_member\_rescored(L422-L465)}, \texttt{edge\_rescorer.py::rescore\_edges(L236-L246)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage4. トラック修復 \& 2〜10フレームギャップ結合 (ILP4)} \\ &\text{\small ・呼び出し元: \texttt{inference.py::solve\_graph(L391-L396)}} \\ &\text{\small ・実行: \texttt{utils.py::close\_gaps(L1084-L1143)} (+ オプション: \texttt{rematch\_ambiguous}, \texttt{join\_adjacent})} \end{aligned} } \\
+\boxed{ \begin{aligned} &\textbf{Stage4. ドリフト補正距離付き Event ILP} \\ &\text{\small ・\texttt{solver.py::build\_event\_graph(L129-L227)}, \texttt{solve\_event\_ilp(L230-L295)}, \texttt{lpfix.py::solve\_lpfix(L43-L133)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage5. 運動保存直線スムージング \& 1フレーム補間 \& サブボクセルCSV出力} \\ &\text{\small ・呼び出し元: \texttt{inference.py::solve\_graph(L397)}, \texttt{write\_submission(L1171-L1216)}} \\ &\text{\small ・実行: \texttt{utils.py::smooth\_track\_coords(L727-L819)} $\rightarrow$ \texttt{fill\_track\_gaps(L822-L908)}} \end{aligned} } \end{gathered}$$
+\boxed{ \begin{aligned} &\textbf{Stage5. 最小修復 \& ドリフト補償平滑化 \& CSV出力} \\ &\text{\small ・\texttt{pipeline.py::run\_pipeline(L275-L296)}, \texttt{minimal\_repair(L59-L98)}, \texttt{smooth\_positions(L140-L162)}} \end{aligned} } \end{gathered}$$
 
 #### Stage0. ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
-| `ctdd-11model-final-v2-ilp1-rematch-adj-off.py` | `OFFLINE_PACKAGES`, `install_offline_deps()` | L33-L85 | `tracksdata`, `zarr`, `geff`, `pyscipopt`, `ilpy`, `polars` 等13個のオフラインWheel導入とモジュールキャッシュパージ |
-| `ctdd-11model-final-v2-ilp1-rematch-adj-off.py` | `configure()`, `main()` | L101-L208 | `SubmitConfig` のパス設定、全17コードファイルと全11モデルのSHA-256検証、`run_clips()` と `write_submission()` の実行 |
-| `config.py` | `BaseConfig`, `InferConfig`, `SubmitConfig`, `TrainConfig` | L4-L262 | 入力解像度 `(64,64,64)`、11モデルのチェックポイント、多段ILP(ILP1〜ILP4)とスムージングの全パラメータ定義 |
-| `config.py` | `DUPLICATE_FRAMES`, `DRIFT_FRAMES` | L268-L503 | CV評価から除外する訓練データ内の重複フレーム(114動画)および6µm超の大ドリフトフレーム(116動画)の辞書定義 |
-| `inference.py` | `inference_devices()`, `run_clips()` | L411-L493 | 利用可能な全GPUデバイスの検出、`Backend` クラス定義、`run_scheduled()` による推論実行とスケジュールJSON保存 |
-| `inference_fast.py` | `fast_model_context()`, `model_execution_order()` | L41-L89 | Cross-Attentionの不要な重み計算の無効化、および大容量Residual U-Net(`run79`)を先頭に配置する実行順序ソート |
-| `inference_fast.py` | `InferenceUNetRunner` | L131-L224 | OOM発生時にTTAバッチサイズを `8 → 4 → 2 → 1` へ自動縮小してリトライする推論ランナー |
-| `inference_fast.py` | `clip_costs()`, `run_scheduled()` | L226-L346 | フレーム数の多い動画を優先する `PriorityQueue` と、GPU予測(`predict`)とCPU多段ILP(`solve_save`)の非同期オーバーラップ実行 |
+| `biohub-cell-tracking-inference.py` | `setup_environment()` | L30-L72 | Kaggleではwheelをオフラインinstall、ローカルでは `src/` を `sys.path` に追加し、`SETTINGS.json` を解決 |
+| `biohub-cell-tracking-inference.py` | `main()` | L75-L170 | 引数解析(`--variant fin/best`, `--movies`, `--num-shards`, `--session-hours`)、設定表示、`cli.run()` 実行、集計表示 |
+| `recipe.py` | `VARIANTS`, `verify_variant()`, `shipped_config()` | L49-L151 | fin/best の6チェックポイント+6再スコアラーとSHA-256、検証後に `IsotropicConfig` へ取り付け |
+| `isotropic/config.py` | `DetectionConfig`, `CandidateConfig`, `SolverConfig`, `SmoothingConfig`, `IsotropicConfig` | L28-L156 | 閾値0.5、NMS窓(3,5,5)、TTAビュー(4,4,4,3,2,2)、k=4/20µm、ILPコスト、平滑化(w=0.8, ±2)のデフォルト値 |
+| `isotropic/kaggle.py` | `bootstrap()`, `plan_run()` | L122-L216 | 環境構築、GPU数に応じたシャード数・12時間セッション締切・autocast dtype(T4はfp16)の決定 |
+| `cli.py` | `run()`, `summarize()` | L18-L71 | 実行計画を作り `run_pipeline()` を呼ぶ。動画ごとのノード・エッジ・分裂数を集計 |
+| `isotropic/shard.py` | `movie_weight()`, `_setup_queue()`, `_claim_next()` | L38-L65 | 大きい動画順のファイルキュー作成と `os.rename` によるアトミックな動画取得 |
+| `isotropic/shard.py` | `guard_ladder()`, `guard_cost_ratio()`, `guard_pick()`, `post_reserve_seconds()` | L76-L131 | Deadline Guard: TTAラダーの構築、コスト推定、締切に間に合う設定の選択、後処理用の予約時間 |
+| `isotropic/shard.py` | `predict_sharded()`, `rerun_missing()`, `worker_main()` | L165-L434 | GPUごとのワーカー起動、失敗動画の degraded → primary-only 再実行 |
+| `isotropic/fallback.py` | `dog_frame()`, `link_nearest()`, `model_free_movie()`, `placeholder_movie()` | L30-L130 | 最終手段: DoG検出 + ドリフト補正最近傍リンク、それも失敗したら1ノードのプレースホルダ |
+
+#### Stage0. シーケンス図
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Main as biohub-cell-tracking-inference.py<br/>main()
+    participant CLI as cli.py / pipeline.py<br/>run() / run_pipeline()
+    participant Shard as shard.py<br/>predict_sharded()
+    participant Worker as Worker (GPU0 / GPU1)<br/>worker_main()
+    participant Pred as predict.py<br/>predict_movie()
+
+    Main->>Main: setup_environment() / bootstrap() (L112-L120)
+    Main->>Main: shipped_config(variant): 24ファイルのSHA-256検証 (L129)
+    Main->>CLI: run(variant, settings, config) (L150)
+    CLI->>CLI: plan_run(): GPU数 → num_shards, 締切12h, fp16/bf16 (cli.py L36)
+    CLI->>Shard: predict_sharded(data_dir, output_dir, config) (pipeline.py L248)
+    Shard->>Shard: _setup_queue(): 大きい動画順に *.pending を作成
+    par GPUごとに1プロセス
+        Shard->>Worker: subprocess.Popen(CUDA_VISIBLE_DEVICES=i, config.json)
+        loop キューが空になるまで
+            Worker->>Worker: _claim_next(): os.rename(.pending → .claimed)
+            Worker->>Worker: guard_pick(): 直近5本の時間から TTA設定 (100%/75%/50%/1view) を選択
+            Worker->>Pred: predict_movie(loaded, stem, rung_config, ilp_timeout)
+            Pred-->>Worker: 解グラフ → <stem>.geff 保存
+        end
+    end
+    Shard->>Shard: rerun_missing(): 失敗動画を degraded → primary-only で再実行
+    Shard-->>CLI: geff_paths
+    CLI->>CLI: 各動画: minimal_repair → smooth → clamp (無ければ fallback)
+    CLI-->>Main: submission.csv (validate_submission 済み)
+```
 
 <br/><br/>
 
-### ◆Stage1. 等方性3D Average Pooling(平均プーリング)前処理と `TemporalUNet3D` による細胞検出
+### ◆Stage1. ネイティブ解像度3フレームウィンドウのデコードと共有細胞セット
 
-#### 1-1. 3D Average Pooling による等方性グリッド化と正確な座標変換 (`dataset.py`, `utils.py`)
-コンペの顕微鏡動画は1フレームあたり `(Z=64, Y=256, X=256)` ボクセルであり、物理ボクセル間隔は `Z = 1.625 µm`, `Y = X = 0.40625 µm` と、XY方向がZ方向の4倍細かい異方性(Anisotropic)データです。
-* **主催者コードの欠点**: 主催者提供の公開コード(`predict_unet_transformer.py` L215)では `zarr_arr[t, ::1, ::4, ::4]` と4ボクセルごとに1つだけを抜き出すストライド間引きを行っており、かつ座標変換も単純な割り算 `coords / downsample` だったため、16ボクセル中15ボクセルの輝度情報が失われ、さらにボクセル中心が `1.5` ピクセル(約 `0.6 µm`)ズレていました。
-* **5位解法の改善 (`downsample_volume`, `image_to_network_coordinates`, `utils.py` L46-L73)**:
-  - `load_volume()` (`dataset.py` L510-L539)にて、4フレームずつチャンク読み込みしながら **`F.avg_pool3d(volume, kernel_size=(1, 4, 4), stride=(1, 4, 4))`** を適用します。これにより全ボクセルの輝度を平均化してノイズを抑えつつ、全軸が `1.625 µm` 間隔の完全な**等方性3Dボリューム `(64, 64, 64)`** に変換します。
-  - 輝度はZarrメタデータに記録された動画全体の0.1%〜99.9%分位点(`q_low`, `q_high`)で正規化し、`0.0` 以上にクリップします。
-  - さらに、Average Poolingのブロック中心と元の画像座標の中心を正確に一致させるため、縮小率 $\mathbf{d} = (1, 4, 4)$ に対して以下の半ボクセルオフセット(`0.5`)付き座標変換式(`utils.py` L55-L73)で計算しています:
-  - **① 学習時(元画像の正解座標 $\mathbf{x}_{\text{raw}}$ $\rightarrow$ 縮小グリッド座標 $\mathbf{x}_{\text{net}}$ への変換 `image_to_network_coordinates`)**:
-    $$\mathbf{x}_{\text{net}} = \frac{\mathbf{x}_{\text{raw}} + 0.5}{\mathbf{d}} - 0.5$$
-  - **② 推論時(U-Netの予測座標 $\hat{\mathbf{x}}_{\text{net}}$ $\rightarrow$ 元画像スケールの予測座標 $\hat{\mathbf{x}}_{\text{raw}}$ への復元 `network_to_image_coordinates`)**:
-    $$\hat{\mathbf{x}}_{\text{raw}} = (\hat{\mathbf{x}}_{\text{net}} + 0.5) \odot \mathbf{d} - 0.5$$
-    - $\mathbf{x}_{\text{raw}} = (z_{\text{raw}}, y_{\text{raw}}, x_{\text{raw}})$ : 元画像解像度 `(Z=64, Y=256, X=256)` 上の3次元座標
-    - $\mathbf{x}_{\text{net}} = (z_{\text{net}}, y_{\text{net}}, x_{\text{net}})$ : 縮小後のU-Net入力グリッド `(Z=64, Y=64, X=64)` 上の3次元座標
-    - $\mathbf{d} = (d_z, d_y, d_x) = (1, 4, 4)$ : 各軸のダウンサンプリング倍率(Z軸は等倍、Y・X軸は4分の1縮小)
-    - $\odot$ , $/$ : 各軸(Z, Y, X)ごとの要素積(アダマール積)
+#### 1-1. 入力正規化とウィンドウ計画 (`volumes.py`, `decode.py`)
+* **ネイティブ解像度のまま入力 (`open_native_movie`, `volumes.py` L38-L59)**: 5位解法のような事前の縮小はせず、`(T, 64, 256, 256)` をそのまま読み込みます。ボクセル間隔が学習時の `(1.625, 0.40625, 0.40625)` と異なる動画はエラーにする安全装置付きです。
+* **フレームごとの正規化 (`normalize_native`, L62-L78)**: 各フレームを、そのフレームの最小値・レンジで `[0, 1]` にスケールしてから、フレーム全体の平均・標準偏差でz-scoreします。
+* **ウィンドウ計画 (`window_plan`, `decode.py` L44-L60)**: 各フレーム $t$ は **自分が中央に来る3フレームウィンドウ `[t-1, t, t+1]`** からデコードします(先頭・末尾フレームは端の完全ウィンドウを使用)。全フレームがちょうど1回ずつデコードされます。
 
-#### 1-2. XY平面8方向TTA (`8fixed`) と `TemporalUNet3D` のマルチスケール特徴抽出 (`models.py`, `utils.py`)
-* **XY平面8方向TTA (`do_tta` / `undo_tta`, `utils.py` L281-L320)**:
-  - Z軸は光の減衰により上下非対称であるため反転させず、等方的なXY平面に対して正方形の二面体群 $D_4$(恒等、X反転、Y反転、180°回転、90°回転、270°回転、主対角転置、副対角転置)の **全8通りの変換(`8fixed`)** を生成します。
-  - ※コード内のコメント(`utils.py` L294-L297)にある通り、初期の `8fliprot` モードでは8番目の変換 `rot90(1).transpose(-1, -2)` が実は2番目の `flip_x` と数学的に同一になってしまう重複バグがあったため、真の副対角反転 `rot90(im.transpose(-1, -2), 2)` に修正した **`8fixed`** が使われています。
-* **`TemporalUNet3D` アーキテクチャ (`models.py` L226-L299)**:
-  - 連続する2フレーム $(t, t+1)$ のバッチ `(V=8, T=2, C=1, Z=64, Y=64, X=64)` を入力します。
-  - エンコーダは3ステージ(`run53`/`run74` は `(32, 64, 128)` チャネルの通常3D Convブロック、`run79` は `(64, 128, 256)` チャネルの残差ブロック `_ResidualConvBlock`)。
-  - **時間方向Self-Attention (`_TemporalAttention`, L205-L224)**: 計算量が大きい第1ステージ(フル解像度 $64^3$)はスキップ(`skip_fullres_temporal=True`)し、1/2解像度($32^3$)および1/4解像度($16^3$)のエンコーダ出力において、同一空間座標 `(z, y, x)` のフレーム $t$ と $t+1$ の間でMulti-Head Attention(4 heads)を実行します。
-  - デコーダはTrilinear Upsampleとスキップ接続で元の `64×64×64` 解像度まで復元し、最終ヘッド `head` で32チャネルの特徴マップを出力します。さらに `v2` リンカー向けに、**`pyramid = [head(64^3), decoder_mid(32^3), bottleneck(16^3)]` の3段階マルチスケール特徴ピラミッド** を同時に返します(L296-L298)。
+#### 1-2. 検出器アーキテクチャ (`isotropic_lineage.py`, `multiscale_lineage.py`)
 
-#### 1-3. 88ビュー統合ピーク検出と対数放物線サブボクセル補正 (`prob_to_zyx`, `refine_peaks_parabolic`)
-1. **88ビューのアンサンブル確率マップ生成 (`forward_models`, `inference.py` L130-L150)**:
-   - 11個のモデルそれぞれについて、8方向TTAの検出ロジット `detect_head(head)` を逆変換(`undo_tta`)して8ビュー平均をとり、さらに11モデル間でロジットを平均してからSigmoid関数をかけて、滑らかな3D細胞中心確率マップ `probabilities` を得ます。
-   - また、フレームペア $(t-1, t)$ の第2フレームと $(t, t+1)$ の第1フレームで計算が重複しないよう、`detected1` を次ステップの `detected0` として再利用する設計になっています(L274-L275)。
-2. **物理半径5.0µmの3D Max Pooling NMS (`prob_to_zyx`, `utils.py` L165-L186)**:
-   - 縮小後のボクセルサイズ `1.625 µm` に対し、`pool_kernel_um = 5.0 µm` から計算された `3 × 3 × 3` カーネルで `F.max_pool3d` を実行し、近傍極大かつ確率が閾値(`low_point_threshold = 0.60`)を超えるボクセルを整数ピーク `peaks` として抽出します。
-3. **対数放物線フィッティングによるサブボクセル補正 (`refine_peaks_parabolic`, `utils.py` L189-L219)**:
-   - 抽出された各整数ピーク座標 $(z, y, x)$ について、Z・Y・Xの各軸ごとに中心の対数確率 $c = \log p(0)$ と両隣の対数確率 $l = \log p(-1), r = \log p(+1)$ を取り、曲率 $\kappa = l - 2c + r < -10^{-6}$ (上に凸)を満たす場合に、ガウシアン分布の頂点に対応する二次関数の極大点オフセット
-     $$\Delta = \text{clamp}\left(\frac{0.5 \cdot (l - r)}{l - 2c + r},\; -0.5,\; +0.5\right)$$
-     を加算します。これにより、4倍ダウンサンプリングされた粗いグリッド上でありながら、連続値(サブボクセル精度)の細胞中心座標 `zyx` を復元します。
+`IsotropicLineageNet` (`isotropic_lineage.py` L366-L454) は、`feature_channels = c` に対して以下のチャネル計画を持ちます。
+
+| 段 | ストライド(元解像度比) | グリッド | 物理間隔 | チャネル |
+| :--- | :---: | :---: | :---: | :---: |
+| stem | (1,1,1) | 64×256×256 | 1.625 / 0.406µm | 8 |
+| fine | (1,2,2) | 64×128×128 | 1.625 / 0.8125µm | c/2 |
+| isotropic | (1,4,4) | 64×64×64 | **1.625µm 等方** | c |
+| coarse | (2,8,8) | 32×32×32 | 3.25µm 等方 | 2c(+時間融合) |
+| decoder → heads | (1,2,2) | 64×128×128 | 検出グリッド | c |
+
+1. **エンコーダ(フレームごと独立, `encode()` L414-L425)**: `Conv3d → GroupNorm → GELU` のブロック(`conv_block`, L20-L37)で、**横方向だけの縮小を2回** して1.625µmの等方グリッドへ、さらに3D縮小で3.25µmの粗いグリッドへ。**フレームを独立にエンコードする** のがミソで、推論時は各フレームを1回だけエンコードして、そのフレームを含む3つのウィンドウで使い回せます。
+2. **時間融合 (`MotionTemporalFusion`, L78-L118)**: 粗いグリッド上で、フレーム $t$ の各ボクセルが「隣接フレーム $s$ のどこを見るべきか」の **有界な変位**($2\cdot\tanh(\cdot)$ セル以内)と注意スコアを予測し、隣のフレームの特徴をその位置から `grid_sample` で取ってきて、自分自身と合わせてSoftmax重み付き和をとります。
+   $$\mathbf{out}_t = \mathbf{x}_t + W\left(\sum_{s \in \{t, t\pm1\}} a_{t,s}\, \mathbf{x}_s(\mathbf{p} + \mathbf{d}_{t,s})\right)$$
+   動く細胞を **位置合わせしてから比較する** ための仕組みで、初期化時は変位ゼロ・一様Attentionになるようゼロ初期化されています。
+3. **デコーダとヘッド (`decode_positions()`, L427-L454)**: スキップ接続で `64×128×128` の検出グリッドまで戻し、**中心ロジット**(1ch)と **サブボクセルオフセット**($0.5\tanh(\cdot)$ で±0.5グリッドセル, 3ch)を出力します。bf16だと確率1付近の分解能が粗くなり隣接ピークが同点になるため、**2つのヘッドだけはautocastを切ってfloat32で計算** しています(L444-L449)。
+4. **`MultiScaleLineageNet` の追加要素 (`multiscale_lineage.py` L340-L465)**:
+   - **`GatedTemporalFusion` (L77-L163)**: 時間融合を粗い(coarse)と等方(isotropic)の **2スケール** で行い、隣接フレームごとに複数(4個/2個)の学習済みサンプル点と、ボクセルごとのゲート $g_t$ を持ちます(初期状態は恒等写像)。
+   - **タスク別残差アダプタ (L387-L388)**: 共有デコーダの上に「検出用」と「リンク用」のアダプタを別々に置き、検出とリンクの特徴を分離。
+   - 学習時はメモリ節約のため、等方融合とアダプタを `torch.utils.checkpoint` で再計算します(`_recompute`, L462-L465)。
+
+#### 1-3. TTAと Encoder Cache による高速化 (`predict.py`)
+* **横方向の回転TTA (`_tta_forward`, L134-L175)**: Z軸は光の減衰で方向性があるため触らず、横方向(Y, X)の $k \times 90°$ 回転(4ビューまでは回転のみ、5〜8ビューは転置も追加するD4群)を使います。モデルごとのビュー数は `(4, 4, 4, 3, 2, 2)` で、**1ウィンドウあたり計19ビュー**。単一モデルで1 → 4ビューにしただけで **+0.05** という大きな効果があったそうです。
+* **オフセットの逆変換まで正確に (`_unrotate_offsets` L90-L98, `_anchor_correction` L112-L131)**: 画像を回すと、オフセットベクトルの `(dy, dx)` 成分も回さないといけません。さらに、検出グリッド(ストライド2)とネイティブ解像度で「反転の軸」が半セルずれる問題($\delta = (S - 1 - (G-1)\cdot\text{stride})/\text{stride}$、偶数サイズで半セル)まで補正しています。
+* **ロジット空間で平均**: 中心ロジット・オフセット・特徴マップをすべて元の向きに戻してから平均します。記述子は **ビュー平均済みの特徴マップ** からサンプリングするので、リンク側もTTAの恩恵を受けます。半精度で8ビュー加算すると精度が落ちるため、累積はfloat32です(L153-L154)。
+* **Encoder Cache (`EncoderCache`, L196-L238)**: 1フレームは最大3つのウィンドウに含まれるので、エンコード結果を `(モデル, 回転k, 転置)` ごとにキャッシュし、各ウィンドウでは **必要なフレーム位置だけデコード**(`decode_positions`)します。以降のウィンドウが読まないフレームは即座に破棄。fp16 autocast時はキャッシュもfp16で保持して16GB GPUに収めます。これで **1.4〜1.9倍** 高速化。
+* **fp16 vs bf16 (`inference_autocast_dtype`, L57-L71)**: `"auto"` 設定では、ネイティブbf16対応GPU(Compute Capability 8以上)ならbf16、T4のような非対応GPUならfp16を選びます。T4でbf16をエミュレーションすると **3.5倍遅い** ためです。
+
+#### 1-4. 共有細胞セットの抽出 (`shared_detection`, `peak_indices`, `nodes_from_peaks`)
+1. **6モデルの平均 (`shared_detection`, `predict.py` L190-L193)**: 各モデルのTTA平均済み中心ロジットとオフセットを、さらにモデル間で平均します。**これにより全モデルが全く同じ細胞セットを共有** します(`decode_movie` 内で、全メンバーのデコード結果が一致することを `np.array_equal` で検査, L289-L295)。
+2. **NMS (`peak_indices`, `decode.py` L63-L93)**: `sigmoid` 後の確率に `(3, 5, 5)` 窓(Z 4.9µm × 横 4.1µm)の `max_pool3d` をかけ、**窓内のargmaxがそのボクセル自身** で、かつ確率が `threshold = 0.5` 以上のものを細胞とします(完全な平坦部でも1個だけ残るように `return_indices` で判定)。
+3. **サブボクセル座標と記述子 (`nodes_from_peaks`, `isotropic_lineage.py` L175-L185)**: ネイティブ座標 $= (\text{整数ピーク} + \text{オフセット}) \odot (1, 2, 2)$。半精度では128のインデックスにサブボクセルを足すと丸められてしまうため、ここもfloat32で計算しています。オフセットでボリューム外に押し出された中心は捨てます(`_inside`, `decode.py` L96-L100)。
+4. **記述子のサンプリング (`sample_node_features`, L144-L172)**: 連続座標で、特徴マップの **中心値** と **`(3,5,5)` 局所平均** を `grid_sample` で取り出して連結(2C次元)。MultiScaleでは `LearnedDescriptorSampler` (`multiscale_lineage.py` L166-L210)が、中心から±3µm以内の **学習済みオフセット位置** の特徴をAttentionプーリングして追加(3C次元、Deformable Convと同じ発想)。各モデルは **共有細胞の位置で、自分自身の特徴マップから記述子を取る** ので、細胞は共通でもリンク意見はモデルごとに異なります。
+
+> [!NOTE]
+> Writeupの「効かなかったこと」によると、**MultiScaleモデルの細胞を共有細胞セットに入れると検証 0.939(入れないと0.942)** で、MultiScaleは細胞を出しすぎる傾向があったため「リンクの意見だけ」使ったそうです。とはいえ、コード上の提出レシピ(`shared_detection`)は全6モデルの中心ロジットを平均しているので、最終的には「細胞は6モデル平均、ただしMultiScaleの寄与はTTAビュー数で調整」という形に落ち着いているようにも読めます。
 
 #### Stage1. ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
-| `dataset.py` | `load_volume()` | L510-L539 | 4フレーム単位でZarrを読み込み、`downsample_volume()` で `(64,64,64)` へAverage Pool縮小し、0.1〜99.9%分位点で正規化 |
-| `utils.py` | `calculate_downsample()`, `downsample_volume()` | L30-L52 | `(64,256,256) → (64,64,64)` の縮小率 `(1,4,4)` を算出し、`F.avg_pool3d` で等方性グリッドへ変換 |
-| `utils.py` | `image_to_network_coordinates()`, `network_to_image_coordinates()` | L55-L73 | Average Poolingのブロック中心に合わせた `(coords + 0.5) / scale - 0.5` の双方向座標変換 |
-| `utils.py` | `do_tta()`, `undo_tta()` | L281-L320 | XY平面の8方向変換(`8fixed`: 恒等・反転・回転・主/副対角転置)の適用と逆変換による元の向きへの復元 |
-| `models.py` | `_ResidualConvBlock`, `_TemporalAttention`, `TemporalUNet3D` | L172-L299 | 時間方向Attentionを備えた3D U-Netの定義。フル解像度ヘッドと中間デコーダ・ボトルネックの特徴ピラミッドを出力 |
-| `models.py` | `TrackingLoss.detection()` | L53-L104 | 学習時における3Dガウシアン($\sigma=1.0$)ターゲット生成と、正例・負例個別カウント正規化付きのCenterNet型Focal損失 |
-| `utils.py` | `pool_kernel_from_um()`, `prob_to_zyx()`, `refine_peaks_parabolic()` | L165-L219 | `3×3×3` MaxPool NMSによるピーク抽出と、各軸の対数確率への放物線当てはめによるサブボクセル座標補正 |
-| `inference.py` | `predict_clip()` 内 `forward_models()`, `detect_frame()`, `select_frame()` | L130-L191 | 11モデル×8方向TTAのU-Net推論、アンサンブル確率マップからのピーク検出・放物線補正、閾値フィルタリング |
+| `isotropic/volumes.py` | `open_native_movie()`, `normalize_native()` | L38-L78 | ネイティブ解像度読込(ボクセル間隔チェック付き)と、フレームごとの min-max → z-score 正規化 |
+| `isotropic/decode.py` | `window_plan()` | L44-L60 | 各フレームを自分が中央の3フレームウィンドウに割り当て |
+| `models/isotropic_lineage.py` | `conv_block`, `ResidualBlock`, `MotionTemporalFusion` | L20-L118 | Conv3d-GroupNorm-GELU、残差ブロック、変位予測付き時間融合 |
+| `models/isotropic_lineage.py` | `IsotropicLineageNet` (`encode`, `decode_positions`) | L366-L454 | フレーム独立エンコーダ、時間融合、デコーダ、float32の中心/オフセットヘッド |
+| `models/multiscale_lineage.py` | `GatedTemporalFusion`, `MultiScaleLineageNet` | L77-L163, L340-L465 | 2スケール・複数サンプル・ゲート付き時間融合、検出/リンク別アダプタ |
+| `isotropic/predict.py` | `inference_autocast_dtype()` | L57-L71 | ネイティブbf16対応ならbf16、T4ならfp16 |
+| `isotropic/predict.py` | `_view_forward/_view_inverse`, `_unrotate_offsets`, `_anchor_correction`, `_tta_forward` | L80-L175 | 横方向D4 TTA、オフセットベクトルの逆回転、半セルずれ補正、float32累積でのロジット平均 |
+| `isotropic/predict.py` | `EncoderCache` | L196-L238 | (モデル, ビュー)ごとのフレームエンコード結果のキャッシュと、必要位置だけのデコード |
+| `isotropic/predict.py` | `shared_detection()`, `decode_movie()` | L190-L306 | 6モデルの中心ロジット・オフセット平均による共有細胞セット、メンバーごとの記述子保持 |
+| `isotropic/decode.py` | `peak_indices()`, `decode_frames()` | L63-L152 | (3,5,5)窓のargmax型NMS、閾値0.5、ボリューム外除去 |
+| `models/isotropic_lineage.py` | `sample_node_features()`, `nodes_from_peaks()` | L144-L185 | ネイティブ座標の復元と、中心値+局所平均の記述子サンプリング |
+| `models/multiscale_lineage.py` | `LearnedDescriptorSampler` | L166-L210 | ±3µm以内の学習済みオフセットでのAttentionプーリング記述子 |
 
 #### Stage1. シーケンス図
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Worker as inference.py<br/>predict_graph_gpu()
-    participant Data as dataset.py & utils.py<br/>load_volume() / do_tta()
-    participant Runner as inference_fast.py<br/>InferenceUNetRunner
-    participant UNet as models.py<br/>MyUnet (11 models)
-    participant Peak as utils.py<br/>prob_to_zyx() &<br/>refine_peaks_parabolic()
+    participant Pred as predict.py<br/>decode_movie()
+    participant Vol as volumes.py / decode.py
+    participant Cache as predict.py<br/>EncoderCache
+    participant Net as 6 models<br/>(Isotropic×3 / MultiScale×3)
+    participant Dec as decode.py<br/>peak_indices() / decode_frames()
 
-    Worker->>Data: load_volume(cfg, sample_id) (L349)
-    Note over Data: Zarrを4フレームずつ読込 → F.avg_pool3d(1,4,4) で (T,64,64,64) へ縮小<br/>0.1%〜99.9%分位点で正規化し [0, ∞) にクリップ (L524-L531)
-    Data-->>Worker: volume (T, 64, 64, 64), meta (voxel_size=1.625µm等)
-
-    loop 各フレームペア t = 0 .. T-2 (predict_clip, L264-L319)
-        Worker->>Data: do_tta(volume[t:t+2], mode="8fixed") (L154)
-        Data-->>Worker: image (8 views, 2 frames, 64, 64, 64)
-
-        loop 11個のモデル (execution_order: run79優先 → run53/run74) (L135-L143)
-            Worker->>Runner: unet_runner(model, image) (FP16 autocast, L137)
-            Runner->>UNet: model.forward_unet(image) (OOM時はチャンク 8→4→2→1 自動縮小)
-            Note over UNet: TemporalUNet3D: 3ステージ3D Conv + 時間Self-Attention<br/>pyramid(マルチスケール特徴)とdetect_head(1x1x1ロジット)を出力
-            UNet-->>Runner: feature (pyramid), logit (2 frames)
-            Runner-->>Worker: feature, logit
-            Worker->>Data: undo_tta(feature, "8fixed") & undo_tta(logit, "8fixed") (L140-L142)
+    Pred->>Vol: normalize_native(movie.image) (L257)
+    Pred->>Vol: window_plan(T, frames=3) (L258)
+    loop 各ウィンドウ [t-1, t, t+1]
+        loop 6モデル (views = 4,4,4,3,2,2)
+            loop 各TTAビュー (k×90°回転)
+                Pred->>Cache: runner(start, positions)(model, k, transpose)
+                Cache->>Net: 未キャッシュのフレームだけ model.encode() (fp16時はfp16で保持)
+                Cache->>Net: decode_positions(encoded, times, positions) (時間融合 → デコーダ → float32ヘッド)
+                Net-->>Pred: center_logits, offsets_zyx, features
+                Pred->>Pred: _view_inverse + _unrotate_offsets + _anchor_correction (float32累積)
+            end
+            Pred->>Pred: ビュー平均 (ロジット空間)
         end
-
-        Worker->>Worker: 8ビュー平均 → 11モデル平均 → Sigmoid で確率マップ probabilities[0, 1] 算出 (L144-L149)
-        Worker->>Peak: detect_frame(probabilities[1]) (※t=0のみprobabilities[0]も実行, L274-L275)
-        Peak->>Peak: prob_to_zyx(): 3×3×3 MaxPool NMS でピーク座標 peaks 抽出 (L176-L186)
-        Peak->>Peak: refine_peaks_parabolic(): 各軸のlog確率に放物線を当てはめ ±0.5vox 補正 (L189-L219)
-        Peak-->>Worker: all_peaks(整数), all_zyx(サブボクセル), scores(検出確信度 q)
-        Worker->>Worker: select_frame(): scores > 0.60 (low_point_threshold) の検出ノードを抽出 (L182-L190)
+        Pred->>Pred: shared_detection(): 6モデルの中心ロジット・オフセットを平均 (L274)
+        Pred->>Dec: decode_frames(output, positions) (L287)
+        Dec->>Dec: sigmoid → (3,5,5) max_pool3d のargmax & p≥0.5
+        Dec->>Dec: coords = (peak + offset) × (1,2,2) → ボリューム外を除去
+        Dec-->>Pred: FrameNodes(coords, logits, descriptors)
+        Pred->>Pred: 各メンバーの記述子を member_descriptors に格納 (L288-L299)
     end
 ```
 
 ---
 
-### ◆Stage2. 複数スケールの特徴サンプリングと `NodeTransformer(v1/v2)` による4出力リンク予測
+### ◆Stage2. k-NN候補リンクと関連付けヘッドによる採点
 
-Stage1で検出されたフレーム $t$ の細胞群($N_t$ 個)とフレーム $t+1$ の細胞群($N_{t+1}$ 個)に対し、共有バックボーン `TemporalUNet3D` がすでに出力している特徴マップを再利用してノード特徴量を組み立て、Transformerリンカーで 4種類の予測値(`edge_prob`, `id_dissim`, `appearance_prob`, `division_prob`)を一括算出します。
+Stage1の共有細胞について、連続するフレームペア $(t, t+1)$ ごとに候補リンクを作り、**各モデルが自分の関連付けヘッドで** 採点します(`predict.py::movie_terms()` L499-L538 → `associate_members()` L361-L380)。
 
-#### 2-1. 2世代のノード特徴量サンプリング (`sample_node_features`, `models.py` L534-L551)
-11個のアンサンブルモデルには、`v1`(`run53` の5モデル)と `v2`(`run74` の5モデル + `run79` の1モデル)の2種類のリンカーが含まれており、特徴量の抜き出し方が進化していますが、v1もv2も使用してアンサンブルしています。
+#### 2-1. 候補リンク: 対称k近傍グラフ (`candidate_edges_kdtree`, `graph.py` L44-L87)
+* 「フレーム $t+1$ の各細胞から見た $t$ の近傍4個」と「フレーム $t$ の各細胞から見た $t+1$ の近傍4個」の **和集合**(半径20µm以内)を `cKDTree` で作り、重複を除きます(重複があると親の確率質量を二重計上してしまうため)。
+* これで **アノテーションされたリンクの約99.4%で、真の親が候補に入る** そうです。
+* **確率による枝刈りは一切しません**。Softmaxにすでに「新規細胞」の選択肢があるので、ILPに全候補をそのまま渡します(Writeupでは、確率で枝刈りすると0.48カットで 0.900 → 0.867 と、どのカットでも悪化)。
 
-* **`v1` リンカー (`run53`: 整数ピークでの単一スケール抽出)**:
-  - フル解像度($64^3$)のU-Net出力ヘッド `levels[0]`(32ch)から、整数ピーク座標 `peaks` `(z, y, x)` を直接インデックス参照して **32次元** の特徴ベクトルを取得します。
-* **`v2` リンカー (`run74`, `run79`: サブボクセル座標での複数スケールTrilinear補間)**:
-  - 放物線フィッティングで精緻化された連続座標 `zyx` を `[-1, 1]` の正規化グリッド座標 `grid = (zyx + 0.5) / shape * 2 - 1` に変換します。
-  - `align_corners=False` の **`F.grid_sample(..., mode="bilinear")` (5Dテンソルに対しては3次元Trilinear補間)** を用いることで、解像度が異なる3つのピラミッド階層すべてにおいて**物理的に全く同じ3次元空間位置**から特徴量を滑らかに補間抽出して連結します:
-    - `run74`: Head(32ch, $64^3$) + Decoder(64ch, $32^3$) + Bottleneck(128ch, $16^3$) = **計224次元**
-    - `run79`: Head(64chではなく `out_ch=32`, $64^3$) + Decoder(128ch, $32^3$) + Bottleneck(256ch, $16^3$) = **計416次元**
-* **TTAビュー融合 (`tta_features`, `inference.py` L157-L160)**:
-  - 元の1ビューだけでなく**8方向TTAのすべての逆変換済み特徴マップ(`V=8`)から各ノードの特徴量をサンプリング**し、8ビュー×11モデルのすべてにリンカーを通します。
+#### 2-2. 関連付けヘッド (`LineageAssociationHead`, `isotropic_lineage.py` L282-L350)
+1. **射影と速度予測**: 記述子を `Linear → LayerNorm → GELU` で `hidden` 次元(Aは192, B〜Fは256)に射影し、各ソース細胞が **速度 $\mathbf{v}_i$(µm/フレーム)と軸ごとの対数分散 $\log\boldsymbol{\sigma}_i^2$** を予測します(`self.motion`)。
+2. **8次元のエッジ幾何特徴 (`edge_geometry`, L267-L279)**: 候補リンク $(i, j)$ の変位 $\Delta_{ij} = \mathbf{u}_j - \mathbf{u}_i$ から
+   $$\mathbf{g}_{ij} = \left[\frac{\Delta_{ij}}{10},\; \frac{\|\Delta_{ij}\|}{10},\; \frac{\Delta_{ij} - \mathbf{v}_i\,dt}{\boldsymbol{\sigma}_i\,dt + 10^{-3}},\; dt\right]$$
+   を作ります。3番目の項は **「予測速度からのズレを、予測した不確実性で標準化したもの」** で、カルマンフィルタのイノベーションに近い発想です。
+3. **双方向スパースグラフAttention (`SparseAssociationBlock`, L208-L238)**: 各候補リンクのスコアを `MLP([src_i, tgt_j, g_ij])` で計算し、**ターゲット側でグループ化したSoftmax** と **ソース側でグループ化したSoftmax** の両方(`segment_softmax`, L198-L205)でメッセージを集約して、$t$ と $t+1$ の細胞が互いを更新します。これを3〜4ブロック繰り返します(Trackastraと似ていますが、k-NN候補グラフ上のスパース版で、検出器と同時学習される点が違います)。
+4. **出力 (`AssociationOutput`, L241-L250)**:
+   - **エッジロジット** $e_{ij}$(候補リンクごと)
+   - **親無しロジット** $n_j$(ターゲットごと = 「新規細胞」クラス)
+   - **分裂ロジット** $\ell^{div}_i$(ソースごと)
+   - **速度** $\mathbf{v}_i$
+   - (娘ペアヘッド `score_daughter_pairs` は学習時の補助信号のみで、推論では未使用)
+5. **親候補 + nullの同時正規化 (`parent_log_probabilities`, L253-L264)**:
+   $$\log P(\text{parent}=i \mid j) = e_{ij} - \log\left(e^{n_j} + \sum_{i' \in \mathcal{C}(j)} e^{e_{i'j}}\right), \qquad \log P(\text{null} \mid j) = n_j - (\text{同じ正規化項})$$
+   各ターゲット細胞 $j$ について「候補親のどれか or 新規細胞」の確率がちょうど合計1になります。
+6. **`RefiningAssociationHead`(MultiScale用, `multiscale_lineage.py` L213-L328)**: 1ブロック目の後に、各ソースの候補後継への **ソフト割当(暫定スコアのSoftmax)から期待変位** を計算し、速度と不確実性を残差的に更新してから、エッジ幾何を再計算して残りのブロックを通します(ゼロ初期化なので学習開始時は通常ヘッドと同一)。
 
-#### 2-2. 4つの出力ヘッドの設計と学習時の工夫 (`models.py`: `MyUnet`, `NodeTransformer`, `NodeTransformerV2`, `TrackingLoss`)
-各ノード $i$ の入力トークンは、`[U-Net特徴量(32 / 224 / 416次元) + 外見埋め込み(16次元) + 4次元Fourier位置エンコーディング(32次元)]` を連結したベクトル(`v1`: 80次元、`run74`: 272次元、`run79`: 464次元)です。これを `hidden_dim = 128` に線形射影してTransformerに入力します。
-
-1. **外見埋め込みと非類似度 (`identity_head` & `id_dissim`, `models.py` L105-L120, L495-L500, L571-L573)**:
-   - フル解像度U-Net特徴(先頭32ch)を2層MLP(`32 → GELU → 16`)に通し、L2正規化して **16次元の単位外見ベクトル $\mathbf{e}_i$** を作ります。
-   - **学習時 (`TrackingLoss.identity`)**: フレーム $t+1$ の各細胞から見て、フレーム $t$ の全実在細胞との温度付き内積 $\mathbf{e}_i^\top \mathbf{e}_j / \tau$ ($\tau = 0.1$)をロジットとし、正解の親細胞を当てる多クラス交差エントロピー損失(InfoNCE対照学習と同等の定式化、`id_loss_weight = 0.005`)で学習します。
-   - **推論時 (`inference.py` L246-L251)**: 全ペア $(i, j)$ について **外見非類似度 $\text{id\_dissim}_{ij} = 1 - \mathbf{e}_i^\top \mathbf{e}_j \in [0, 2]$** を88ビュー平均で算出し、後続の多段ILPにおけるエッジコストのペナルティ項として直接利用します。
-2. **`NodeTransformer` (v1) と `NodeTransformerV2` (v2) の構造的進化 (`models.py` L301-L476)**:
-   - **`v1` (`NodeTransformer`, L301-L399)**: フレーム $t$ のトークン群 $Q$ とフレーム $t+1$ のトークン群 $K$ の間で、双方向 `CrossAttentionBlock` を4ブロック繰り返します。ペア採点MLP(`pair_mlp`)には `[q_i, k_j, (coord_i - coord_j) / 100.0]` (259次元)を入力します。
-   - **`v2` (`NodeTransformerV2`, L409-L476)**: 各ブロックにおいて、まず**同一フレーム内の全細胞間でSelf-Attention(`self_block(q, q)` および `self_block(k, k)`)を実行してから、フレーム間の双方向Cross-Attention(`cross_block`)を実行**します(計4ブロック)。さらにペア採点MLPには、ピクセル座標差ではなく**物理単位($\mu\text{m}$)での3次元変位ベクトル $\Delta \mathbf{u}_{ij} / 5.0\text{ µm}$ とそのユークリッド距離 $\|\Delta \mathbf{u}_{ij}\| / 5.0\text{ µm}$** を連結した260次元ベクトルを入力します。
-   - ※両バージョンとも、細胞数 $N$ が多いフレームで $O(N^2)$ のペアテンソルがVRAMを圧迫しないよう、`pair_chunk_size = 32` 単位でソースノードを分割して `pair_mlp` を計算する省メモリ設計になっています(L370-L395, L467-L472)。
-3. **リンク確率 (`edge`), 新規出現ヘッド (`appearance_head`), 細胞分裂ヘッド (`division_head`)**:
-   - **リンク確率 `edge_prob`**: `pair_mlp` が出力したロジット行列 `(N_t, N_{t+1})` を88ビュー平均した後、**ソース方向(`dim=0`: 各ターゲット $j \in t+1$ に対する親候補 $i \in t$ 間)にSoftmax** をとります(`inference.py` L242)。これにより「1つの親 $i$ が2つの娘 $j_1, j_2$ の両方で確率1.0に近い値をとる(細胞分裂)」ことは許容しつつ、「複数の親が1つの子を取り合う(合流: Merge)」ことを自然に抑制します。
-   - **新規出現確率 `appearance_prob` (`models.py` L138-L145, L397, L473)**: フレーム $t+1$ のCross-Attention通過後トークン $k_j$ に線形層 `appearance_head` を適用し、「フレーム $t$ に対応する親が存在しない新規細胞か？」を予測します。学習時は正例重み **`appearance_pos_weight = 10.0`** のBCE損失で学習。
-   - **細胞分裂確率 `division_prob` (`models.py` L147-L170, L398, L474)**: フレーム $t$ のCross-Attention通過後トークン $q_i$ に線形層 `division_head` を適用し、「この細胞が次フレームで2つに分裂するか？」を予測します。
-     - **学習時の重要な工夫 (L148-L166)**: 訓練中、検出器が2つの娘細胞のうち片方を見逃してしまうと、マッチングされたエッジ行列上では出次数が1になってしまいます。そこで5位解法は、検出されたソース細胞を元の正解グラフ(GT)の親ノードIDへ逆引きし、**「たとえ検出器が片方の娘を見逃していても、元のGT親ノードの出次数が2(`gt_edges.sum(-1) == 2`)であれば正例(分裂=1)としてラベル付けする」** という処理と、正例重み **`division_pos_weight = 20.0`**(さらに人手レビュー分裂データ `human_positive.csv` の補強)を組み合わせることで、稀な細胞分裂の検出力を劇的に引き上げています(**Public +0.020 / Private +0.024**)。
+#### 2-3. 6モデルのリンク意見の統合 (`combine_member_pairs`, `predict.py` L335-L358)
+再スコアラーを使わない場合は、6モデルの「親候補+null」分布を **確率空間で平均** します(`logaddexp.reduce - log K`)。分裂ロジットと速度は単純平均。提出レシピでは、この前にStage3の再スコアラーが入ります。
 
 #### Stage2. ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
-| `models.py` | `LinkOutput`, `TrackingLoss` (`identity`, `appearance`, `division`) | L25-L170 | 外見対照学習損失($\tau=0.1$)、新規出現BCE損失(`pos_weight=10`)、GT親次数に基づく分裂BCE損失(`pos_weight=20`)の定義 |
-| `models.py` | `NodeTransformer` (v1) | L301-L399 | `run53` 用の双方向Cross-Attention(4層) + チャンク分割ペア採点MLP + `appearance_head` + `division_head` |
-| `models.py` | `NodeTransformerV2` (v2) | L409-L476 | `run74`/`run79` 用のフレーム内Self-Attention + フレーム間Cross-Attention + 物理変位(`µm`)ペア採点MLP |
-| `models.py` | `MyUnet` (`sample_node_features`, `identity_embedding`, `predict_links`) | L478-L588 | U-NetとTransformerを統合するモデル本体。`v2` では `F.grid_sample` によるマルチスケール特徴のTrilinear補間を実行 |
-| `utils.py` | `embed_position()` | L257-L276 | 4次元座標 `(t, z, y, x)` に対する4周波数Sin/Cos Fourier位置エンコーディング(8次元×4軸=32次元) |
-| `inference.py` | `tta_features()`, `embed_identities()`, `fuse_links()`, `add_to_out()` | L83-L129, L157-L257 | 8方向TTA×11モデルのノード特徴抽出、16次元外見埋め込みと非類似度 `id_dissim` 算出、4出力の平均融合と候補エッジ(`p > 0.20`)登録 |
+| `isotropic/graph.py` | `PairAssociation` | L26-L41 | フレームペアごとのエッジindex、`edge_logp`、`null_logp`、分裂ロジット、距離、速度 |
+| `isotropic/graph.py` | `candidate_edges_kdtree()` | L44-L87 | 双方向k=4・20µm以内の対称k近傍候補グラフ(重複除去) |
+| `isotropic/graph.py` | `associate_pair()` | L90-L140 | 関連付けヘッドの実行と親候補+nullの対数確率化 |
+| `models/isotropic_lineage.py` | `segment_softmax()`, `SparseAssociationBlock` | L198-L238 | 端点ごとのスパースSoftmaxと双方向メッセージパッシング |
+| `models/isotropic_lineage.py` | `parent_log_probabilities()`, `edge_geometry()` | L253-L279 | 候補+nullの同時正規化、8次元幾何特徴(不確実性で標準化した速度残差を含む) |
+| `models/isotropic_lineage.py` | `LineageAssociationHead` | L282-L350 | 射影・速度/分散予測・グラフAttention・エッジ/null/分裂/娘ペアヘッド |
+| `models/multiscale_lineage.py` | `RefiningAssociationHead` | L213-L328 | グラフ内でのソフト割当による速度・不確実性の途中更新 |
+| `isotropic/predict.py` | `associate_members()`, `combine_member_pairs()`, `movie_terms()` | L335-L380, L499-L538 | 全モデルでの採点、確率空間平均、動画全体のフラット配列化 |
 
 #### Stage2. シーケンス図
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Clip as inference.py<br/>predict_clip()
-    participant UNet as models.py<br/>MyUnet (11 models)
-    participant Pos as utils.py<br/>embed_position()
-    participant Trans as models.py<br/>NodeTransformer (v1 / v2)
+    participant Terms as predict.py<br/>movie_terms()
+    participant Graph as graph.py<br/>associate_pair()
+    participant Head as 関連付けヘッド<br/>(各モデル)
 
-    loop 各フレームペア (t, t+1) (L277-L316)
-        Clip->>UNet: embed_identities(features, frame, peaks, zyx) (L161-L172, L187)
-        Note over UNet: フル解像度特徴マップ(32ch)から8方向TTAビューをサンプリングし、<br/>identity_head(MLP) + L2正規化で 16次元単位ベクトルを抽出 (11モデル×8ビュー)
-        UNet-->>Clip: identities0 (t), identities1 (t+1)
-
-        Clip->>Pos: embed_position(zyx0, t=0) & embed_position(zyx1, t=1) (L221-L222)
-        Pos-->>Clip: pos0, pos1 (32次元 4D Fourier位置エンコーディング)
-
-        loop 11個のモデル (run53×5 [v1], run74×5 [v2], run79×1 [v2]) (L227-L237)
-            Clip->>UNet: tta_features(): sample_node_features(views=8, peaks, zyx) (L228-L229)
-            alt v1 モデル (run53)
-                Note over UNet: フル解像度マップ(32ch)を整数ピーク座標でインデックス参照
-            else v2 モデル (run74 / run79)
-                Note over UNet: 放物線補正後の連続座標 zyx で 3階層ピラミッド(224ch / 416ch)を<br/>F.grid_sample (Trilinear補間) でマルチスケール抽出
-            end
-            Clip->>Trans: model.predict_links(select0, select1, coord0, coord1, pos0, pos1) (L231-L237)
-            Note over Trans: [U-Net特徴 + 16D Identity + 32D Pos] を入力<br/>v1: Cross-Attn × 4層 + ピクセル差MLP<br/>v2: (フレーム内Self-Attn + フレーム間Cross-Attn) × 4層 + µm物理変位MLP
-            Trans-->>Clip: LinkOutput(edge, appearance, division) (8 TTA views)
+    loop 各フレームペア (t, t+1)
+        loop 6モデル (共有細胞 × 各モデル自前の記述子)
+            Terms->>Graph: associate_pair(model, source, target) (L516)
+            Graph->>Graph: candidate_edges_kdtree(k=4 双方向, 20µm) (L106-L111)
+            Graph->>Head: model.association(desc_t, desc_t1, um_t, um_t1, edge_index)
+            Note over Head: 射影 → 速度 v と logσ² を予測<br/>8次元幾何 g_ij (変位, 距離, 標準化速度残差, dt)<br/>Sparse双方向グラフAttention × 3〜4ブロック
+            Head-->>Graph: edge_logits, no_parent_logits, division_logits, velocity
+            Graph->>Graph: parent_log_probabilities(): 候補+null を同時Softmax
+            Graph-->>Terms: PairAssociation (edge_logp, null_logp, division_logit, velocity)
         end
-
-        Clip->>Clip: 11モデル × 8 TTAビュー = 88予測を平均融合 (L239-L251):<br/>・edge_prob = mean(edge).softmax(dim=0)<br/>・appearance_prob = mean(appearance).sigmoid()<br/>・division_prob = mean(division).sigmoid()<br/>・id_dissim = mean(1.0 - id0 @ id1.T)
-        Clip->>Clip: add_to_out(): 全ノード属性と edge_prob > 0.20 の候補エッジを保存 (L314-L315)
+        Terms->>Terms: member_pairs に6モデル分を保持 (Stage3の再スコアラー用)
     end
 ```
 
-
 ---
 
-### ◆Stage3. 検出確信度ノードコスト付き多段ILPトラッキング (ILP1 / ILP2 / ILP3 `relink_ilp`)
+### ◆Stage3. メンバー専用LightGBM再スコアラーと確率平均
 
-Stage2で得られた動画全体の検出ノードと候補エッジを受け取り、`inference.py::solve_graph()` (L366-L398)にて **`tracksdata` + `HighsILPSolver` を用いた多段整数線形計画法(Multi-stage ILP)** を計算させています。
+エッジ誤りの51〜57%を占める **隣接細胞とのIdentity Swap** を減らすため、各モデルの親候補分布を、そのモデル専用の勾配ブースティング木で並べ替え直します(`predict.py::fuse_member_rescored()` L422-L465)。
 
-#### 3-1. ILPの目的関数と「検出確信度ノードコスト」 (`solve_ilp`, `utils.py` L533-L572)
-コンペ主催者の公開コードのILPは、検出されたノードに対して一切のコスト(または報酬)を与えず、出現・消失・分裂にも全ノード共通の固定定数(`0.1, 0.1, 1.0`)しか使っていませんでした。
-これに対し5位解法は、Stage1・Stage2で予測した **5つの確率・距離属性(`node_prob` $q_i$, `edge_prob` $p_{ij}$, `id_dissim` $s_{ij}$, `appearance_prob` $a_i$, `division_prob` $d_i$)** をすべてILPの最小化目的関数に組み込んでいます:
+#### 3-1. 23次元のエッジ特徴 (`edge_features`, `edge_rescorer.py` L31-L103)
 
-$$\min \sum_{i} w_{\text{node}}(i)\cdot x_i + \sum_{(i,j)} w_{\text{edge}}(i,j)\cdot y_{ij} + \sum_{i} w_{\text{app}}(i)\cdot \alpha_i + \sum_{i} w_{\text{dis}}\cdot \delta_i + \sum_{i} w_{\text{div}}(i)\cdot \nu_i$$
+| 次元 | 特徴 | 狙い |
+|---:|---|---|
+| 5 | モデルの対数確率、そのターゲットの候補内での順位、最良ライバルとのマージン、候補数、「新規細胞」の対数確率 | モデル自身の自信度 |
+| 2 | 距離(生 / ドリフト補正後) | ステージドリフトの影響を除いた移動量 |
+| 4 | Z方向・横方向の変位(生 / フレームのドリフト除去後) | 異方性を考慮した動き |
+| 2 | 速度残差(全体 / Z方向) | 予測速度との整合性 |
+| 3 | 両細胞の中心ロジット、親の分裂ロジット | 偽細胞・分裂の可能性 |
+| 3 | **親側の競合**: 親が他のターゲットへ持つ最良スコア、親を1位に選んでいるターゲット数、親の候補子数 | 「1人の親を2人で取り合っていないか」 |
+| 2 | 局所密度(半径10µm以内の細胞数, 両細胞) | 混み合った場所ほどSwapしやすい |
+| 2 | 細胞の深さ(Z)、動画内の相対時刻 | 深部は暗くぼやける、発生ステージ |
 
-各係数は以下のように動的に計算されます(`solve_ilp`, L538-L565):
-1. **検出確信度によるノードコスト (`node_weight`, Private +0.020 の大改善)**:
-   $$w_{\text{node}}(i) = -\text{ilp\_node\_weight} \cdot (q_i - \text{ilp\_node\_bias}) = -8.0 \cdot (q_i - 0.96)$$
-   - 確信度 $q_i > 0.96$ の確実な細胞はコストが**負(報酬)**となるため、ソルバーは積極的にその細胞をトラックに採用します。
-   - 逆に $0.60 < q_i < 0.96$ の低確信度ノードは**正のペナルティ(最大 `+2.88`)**を支払うため、「前後の高確信度ノードを綺麗に繋ぐギャップ埋めとして機能し、エッジ報酬がそのペナルティを上回る場合」にのみ選択されます。これにより、検出閾値を `0.60` まで下げても偽陽性ノードが氾濫しません。
-2. **外見非類似度を加味したエッジコスト (`edge_weight`)**:
-   $$w_{\text{edge}}(i, j) = \text{ilp\_edge\_weight} \cdot p_{ij} + w_{\text{idsim}} \cdot s_{ij} = -1.0 \cdot p_{ij} + 0.5 \cdot (1 - \cos(\mathbf{e}_i, \mathbf{e}_j))$$
-   - リンク確率 $p_{ij}$ が高く、かつ16次元外見ベクトルが似ている($s_{ij}$ が0に近い)ペアほどコストが負に大きくなり優先的に接続されます。
-3. **ノード別の新規出現コスト (`appearance_weight`) と消失コスト (`disappearance_weight`)**:
-   $$w_{\text{app}}(i) = 0.5 - 0.5 \cdot a_i, \qquad w_{\text{dis}} = 1.8 \text{ (ILP2)} \to 3.5 \text{ (ILP3)}$$
-   - Transformerの `appearance_head` が「この細胞は新規出現($a_i \approx 1$)」と予測したノードでは、トラック開始コストが `0.5 → 0.0` に割引されます。
-4. **ノード別の細胞分裂コスト (`division_weight`)**:
-   $$w_{\text{div}}(i) = \text{ilp\_division\_weight} + \text{ilp\_division\_scale} \cdot (0.5 - d_i) = 0.85 + 4.0 \cdot (0.5 - d_i) = 2.85 - 4.0 d_i$$
-   - 通常細胞($d_i \approx 0$)の分裂コストは `+2.85` と高く偽分裂を抑止しますが、`division_head` が $d_i > 0.7125$ と強く予測した母細胞では分裂コストが**負(報酬)**となり、2つの娘細胞への分岐が自然に選択されます。
+関連付けヘッドはターゲット側でSoftmaxをとるので、**「親側から見た競合」** は見えていません。再スコアラーはまさにその穴を埋める設計になっています。
 
-#### 3-2. `HighsILPSolver`: LP緩和 + 100-hop近傍厳密MILPによる高速求解 (`utils.py` L452-L523)
-動画全体のグラフ(数万ノード・十数万エッジ)をそのまま汎用MIPソルバーに投げると計算時間がかさみます。そこで5位解法は、`tracksdata.solvers.ILPSolver` を継承した独自の **`HighsILPSolver`** を実装しています:
-1. シンボリック式の構築を省き、直接疎行列 `scipy.sparse.csr_matrix` で流量保存制約(入次数・出次数・分裂整合性)を高速構築(`_add_continuous_flow_constraints`, L459-L494)。
-2. まず全変数の整数制約を外した **連続LP緩和問題(`integrality = 0`)** を SciPy の `milp` (HiGHSバックエンド)で解きます(L509)。ネットワークフロー問題の性質(全単模性に近い構造)により、この時点で**ほぼすべての変数が最初から厳密に `0.0` または `1.0` に収束**します。
-3. 小数(端数: `|x - round(x)| >= 1e-6`)になったごく一部の変数だけを特定し、制約行列 $A$ の二部グラフ上でその端数変数から **`hops = 100` ステップ以内の近傍にある変数だけを自由変数(`free`)として開放**し、残りの確定変数はすべてLP緩和の整数値に固定(`Bounds(round(x), round(x))`)した上で、相対ギャップ許容誤差ゼロ(`mip_rel_gap = 0.0`)の**厳密な混合整数計画法(MILP)** を解きます(L510-L522)。
+#### 3-2. nullの確率を変えずに再ランク (`rescored_logp`, L106-L115)
+木の出力(raw margin) $m_e$ を候補内でSoftmaxし、元の「新規細胞」確率 $P_{null}$ はそのまま残します。
+$$\log P'(\text{parent}=e) = \log\left(1 - P_{null}(j)\right) + \text{log-softmax}_{e \in \mathcal{C}(j)}(m_e)$$
+こうすることで、**ILPの出現コスト(=nullの確率)は再スコアラーの影響を受けません**。
 
-#### 3-3. ILP1 → ILP2 → ILP3 (`relink_ilp`) の多段構成 (`inference.py` L366-L390, `utils.py` L575-L623, L912-L959)
-* **ILP1 (高確信度基準木) & ILP2 (低閾値ギャップ埋め) + `filter_track_graph`**:
-  - **基本設計 (`InferConfig` / Writeup)**: まず高確信度ノード($q > 0.90$)と強いエッジ($p > 0.35$)のみで **ILP1** を解き、信頼できる「基準トラックと基準分裂(`reference_forks`)」を確定します。次に低閾値ノード($q > 0.60$)まで広げた **ILP2** を解いて途切れたギャップを埋め、`filter_track_graph()` (`utils.py` L575-L623)によって **「ILP2で新たに発生した分裂のうち、ILP1に存在しなかった偽の分裂エッジをすべて切断し、余った細胞は独立トラックにする(`no_new_divisions`)」** 処理を行います(Writeupで Public +0.003 / Private +0.007)。
-  - **最終提出(`SubmitConfig` Group N)でのチューニング (`config.py` L185-L203)**: 11モデルアンサンブルでは検出器・分裂ヘッドの精度が十分に高まったため、最終提出設定では分裂基本重みを `0.75 → 0.85`、ILP2エッジ閾値を `0.30 → 0.35` に引き上げることで、ILP1による枝刈り無し(`ilp1["enable"] = False`)でも偽分裂が2件減少しCV/LBが向上する構成に到達しています。
-* **ILP3 (`relink_ilp`: ノード・分裂固定での足場リンク付き再結合, `utils.py` L912-L959)**:
-  - ILP2で採択されたノード集合 `nodes` と分裂分岐 `forks`($\text{out\_degree} \ge 2$)を**完全に固定**します(`probs = 1.2` に設定して全ノードの維持を強制し、`allow_div` 属性により `forks` 以外のノードでの新規分裂コストを $+\infty$ にピン留め、既存の分裂エッジ `fork_edges` には報酬 `5.0` を与えて強制維持)。
-  - その上で、ILP2では閾値(`0.35`)未満で切り捨てられていた **弱い候補エッジ($0.20 < p \le 0.35$)** を解空間に呼び戻し、エッジ報酬を $\text{income} = p^{\gamma} = \sqrt{p}$ (`gamma = 0.5`)に非線形変換します。
-  - さらに外見非類似度ペナルティ重みを `0.5 → 0.7`、トラック消失ペナルティを `1.8 → 3.5` に引き上げて再度ILPを解きます。
-  - このとき、確率が特に低い **$0.20 < p \le 0.25$ (`weak_lo < p <= keep_lo`) のエッジは「足場リンク(`scaffold`)」** として登録しておき、ソルバーが全体のフロー整合性を保つのを助けた後、**ILP求解完了直後に `scaffold` エッジをすべて撤去**します(L954-L958)。これにより、不確実な弱リンクを最終出力に残すことなく、中程度リンク($p > 0.25$)の最適な繋ぎ直しだけを実現します。
+#### 3-3. 学習と推論の工夫 (`training/rescorer.py`, `TreeEnsemble`)
+* **学習 (`biohub-train-rescorer`)**: 各メンバーは、**アンサンブルの共有細胞上での、そのメンバー自身のスコア** で、そのメンバー自身の検証動画を使って学習します。1行は「アノテーション細胞とその親が、どちらも7µm以内でデコード細胞にマッチした」細胞の親候補1つで、真の親が正例です(`labelled_rows`, L56)。LightGBMは `objective=binary, learning_rate=0.05, num_leaves=31, 300本`(L33-L37)。検証時は動画単位5-foldのout-of-foldで適用し、リークを防いでいます。**1モデルあたり +0.004〜+0.007**(検証)。
+* **推論 (`TreeEnsemble`, L118-L198 / `_numba_kernel`, L204-L233)**: LightGBMの `dump_model()` を **フラットなnumpy配列(feature, threshold, left, right, value, roots)** に変換して `.npz` で保存。推論時は **Numbaの `@njit(parallel=True)` で行ごとに木を辿る** だけなので、勾配ブースティングライブラリ不要。Numbaが無ければnumpy版(約20倍遅い)にフォールバックします。
+* **6モデル分を確率平均 (`fuse_member_rescored`, `predict.py` L442-L462)**: メンバー $k$ の再スコア済み分布 $P'_k$ と、メンバーの null 分布を、それぞれ確率空間で平均します。
+  $$\bar{P}(\text{parent}=e) = \frac{1}{K}\sum_{k=1}^{K} P'_k(\text{parent}=e), \qquad K = 6$$
+
+> [!TIP]
+> Writeupによると、**全メンバーの上に1つの再スコアラーを積む(スタッキング)より、メンバーごとに1つずつ持つ方が全提出で良かった**(同じモデルで Public 0.958 vs 0.959)そうです。「各モデルの癖を、そのモデル専用の木で補正してから平均する」方が多様性を保てる、ということですね。
 
 #### Stage3. ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
-| `inference.py` | `solve_graph()` (前半: ILP1〜ILP3) | L366-L390 | ILP1基準木求解、ILP2求解、`filter_track_graph()` による偽分裂除去、`relink_ilp()`(ILP3)の順次呼び出し |
-| `utils.py` | `build_graph()` | L324-L352 | ノード属性(`z, y, x, node_prob, appearance_prob, division_prob`)とエッジ属性(`edge_prob, edge_dist, id_dissim`)を持つ `InMemoryGraph` 構築 |
-| `utils.py` | `HighsILPSolver`, `make_ilp_solver()` | L452-L530 | 連続LP緩和を解き、端数変数から `100` ホップ以内の変数のみを開放して厳密MILP(`mip_rel_gap=0.0`)を解く高速ソルバー |
-| `utils.py` | `solve_ilp()` | L533-L572 | 検出確信度ノードコスト `-8(q-0.96)`、外見非類似度コスト、個別出現・分裂コストを設定してILPを実行 |
-| `utils.py` | `filter_track_graph()` | L575-L623 | ILP1(`reference`)に存在しないILP2の新規分裂枝を切断(`no_new_divisions`)し、必要に応じ未支持パスを除去(`anchor_paths`) |
-| `utils.py` | `relink_ilp()` (ILP3) | L912-L959 | ILP2のノードと分裂を固定し、$p \in (0.20, 0.25]$ の足場リンク(`scaffold`)と $\sqrt{p}$ 報酬・高消失コスト(`3.5`)で再リンク後に足場を除去 |
-
-#### Stage3. シーケンス図
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Solve as inference.py<br/>solve_graph() (L366-L390)
-    participant Graph as utils.py<br/>build_graph() &<br/>filter_track_graph()
-    participant ILP as utils.py<br/>solve_ilp() &<br/>relink_ilp()
-    participant HiGHS as utils.py<br/>HighsILPSolver<br/>(SciPy HiGHS MILP)
-
-    opt ilp1["enable"] == True の場合 (基準木の構築, L369-L376)
-        Solve->>Graph: build_graph(高確信度ノード q>0.90, 強エッジ p>0.35)
-        Solve->>ILP: solve_ilp(cfg, reference_graph)
-        ILP->>HiGHS: LP緩和 → 100-hop近傍厳密MILP
-        HiGHS-->>Solve: reference (ILP1 基準グラフ)
-    end
-
-    rect rgb(240, 248, 255)
-        Note over Solve,HiGHS: 【ILP2: 低閾値ノード(q>0.60)を含むメイントラッキング (L378-L386)】
-        Solve->>Graph: build_graph(全検出ノード q>0.60, 候補エッジ p>0.35)
-        Solve->>ILP: solve_ilp(ILP2Config: app=0.5, idsim=0.5, div=0.85) (L384)
-        Note over ILP: ・node_weight = -8.0 * (q - 0.96)<br/>・edge_weight = -1.0 * p + 0.5 * id_dissim<br/>・appearance_weight = 0.5 - 0.5 * a<br/>・division_weight = 0.85 + 4.0 * (0.5 - d)
-        ILP->>HiGHS: _solve(): CSR疎行列構築 → LP緩和 → 端数の100-hop近傍を厳密MILP求解
-        HiGHS-->>Solve: merged (ILP2 グラフ)
-        opt ilp1["enable"] かつ filter_ilp2 の場合
-            Solve->>Graph: filter_track_graph(reference, merged) (ILP1に無い新規分裂枝を切断)
-        end
-    end
-
-    rect rgb(245, 255, 245)
-        Note over Solve,HiGHS: 【ILP3 (relink_ilp): ノード・分裂固定での再結合と足場リンク撤去 (L387-L390)】
-        Solve->>ILP: relink_ilp(cfg, prediction, merged) (L387, L912-L959)
-        Note over ILP: 1. mergedのノードを固定(q=1.2)、分裂ノード以外を allow_div=0 (コスト+∞) に固定<br/>2. 既存の分裂エッジを強制維持(p=5.0)<br/>3. p > 0.20 の全エッジを income = p^0.5 で追加 (0.20 < p <= 0.25 は scaffold 登録)<br/>4. idsim=0.7, disappearance=3.5 に引き上げて solve_ilp() を実行
-        ILP->>HiGHS: _solve() (固定ノード上の最適エッジ再配置)
-        HiGHS-->>ILP: solved
-        ILP->>ILP: scaffold (0.20 < p <= 0.25) に該当する採択エッジと孤立ノードを削除 (L954-L958)
-        ILP-->>Solve: es3 (ILP3 完了グラフ)
-    end
-```
+| `isotropic/edge_rescorer.py` | `FEATURES`, `edge_features()` | L22-L103 | 23次元特徴(順位・マージン・ドリフト補正距離・速度残差・親側競合・局所密度など) |
+| `isotropic/edge_rescorer.py` | `rescored_logp()` | L106-L115 | nullの質量を保ったままの候補内log-softmax |
+| `isotropic/edge_rescorer.py` | `TreeEnsemble`, `_numba_kernel()`, `rescore_edges()` | L118-L246 | LightGBMのフラット配列化、Numba並列木探索、再スコアの実行 |
+| `isotropic/predict.py` | `member_edge_terms()`, `fuse_member_rescored()` | L410-L465 | メンバーkの自前スコアを再スコアし、6モデルを確率空間で平均 |
+| `training/rescorer.py` | `labelled_rows()`, `fit_rescorer()`, `train_rescorers()` | L56-L148 | 7µmマッチングによる学習行の作成、LightGBM(300本・31葉)の学習とエクスポート検証 |
 
 ---
 
-### ◆Stage4. トラック修復と2〜10フレームのギャップ結合 (ILP4: `close_gaps`)
+### ◆Stage4. ドリフト補正距離付き Event ILP
 
-Stage3のILP3(`es3`)は連続するフレーム $(t, t+1)$ 間のエッジのみを扱いますが、細胞の輝度が一時的に低下したり重なったりして、2フレーム以上にわたって検出が途切れる(トラックが一旦終了し、数フレーム後に別トラックとして再開する)ケースが存在します。
-そこでStage4(`inference.py` L391-L396, `utils.py` L962-L1168)では、分断されたトラック同士を繋ぎ合わせる修復処理を実行します。
+Stage3までで得られた動画全体の細胞と候補リンクを、`tracksdata` 形式のグラフに変換し、**1回の大域的ILP** で解きます(`predict.py::predict_movie()` L590-L596)。
 
-#### 4-1. ILP4 (`close_gaps`): 空き検出スナップ付き2〜10フレームギャップ結合 (`utils.py` L1084-L1143)
-主力の修復ステージで、以下のアルゴリズムで **2〜10フレーム離れたトラック終端と始端** を大域的に1対1結合します:
-1. **信頼できる端点のみに限定 (`track_ends`, L1052-L1068, L1093-L1097)**:
-   - 動画の最終フレームより前で終わっているトラック終端 `ends`(出次数0・入次数1)と、最初のフレームより後で始まっているトラック始端 `starts`(入次数0・出次数1)を抽出します。
-   - 短いノイズ断片を誤結合しないよう、**「端点の検出確信度が `min_q = 0.85` 以上、かつそのトラックの連続長(`run_length`)が `min_len = 8` フレーム以上」** の堅牢なトラック端点のみを対象とします。
-2. **ギャップ長 $k \in [2, 10]$ の探索と速度・距離コスト計算 (L1103-L1114)**:
-   - 終端 $e$ (時刻 $t_e$)から $k \in \{2, 3, \dots, 10\}$ フレーム後の始端 $s$ (時刻 $t_e + k$)のうち、物理3次元距離が **`dist_um = 12.0 µm` 以内** にある候補ペアを `cKDTree` で探索します。
-   - 1フレームあたりの平均移動ベクトル $\text{step} = (\mathbf{u}_s - \mathbf{u}_e) / k$ を求め、終端直前の速度 $\mathbf{v}_{\text{before}} = \mathbf{u}_e - \mathbf{u}_{\text{parent}(e)}$ および始端直後の速度 $\mathbf{v}_{\text{after}} = \mathbf{u}_{\text{child}(s)} - \mathbf{u}_s$ との最大速度ズレを下記数式により算出します。
-     $$\text{mismatch} = \max\left(\|\text{step} - \mathbf{v}_{\text{before}}\|_2,\; \|\text{step} - \mathbf{v}_{\text{after}}\|_2\right)$$
-3. **衝突回避チェックと「未採用の空き検出点(`free_at`)」へのスナップ (L1115-L1130)**:
-   - 欠損している中間フレーム $t_e + h$ ($h = 1, \dots, k-1$)における直線補間位置 $\mathbf{x}_h = \mathbf{u}_e + h \cdot \text{step}$ を走査します。
-   - **衝突回避**: その中間フレームの半径 **`occupied_um = 3.0 µm` 以内に、すでにグラフ内で採用されている既存ノードが存在する場合は、別細胞の領域を横切っていると判断して結合を棄却**します(L1118-L1119)。
-   - **空き検出スナップ (`free_at`)**: Stage1で検出されていたもののStage3のILPで不採用となっていた「余り検出点(`free_at`)」が中間フレームの半径 **`snap_um = 3.5 µm` 以内** に存在する場合、補間位置をその実測検出点 `snap` にスナップさせ、1個につき **`snap_bonus = 0.5`** のコスト割引を与えます(L1120-L1127):
-     $$\text{cost} = \frac{\|\mathbf{u}_s - \mathbf{u}_e\|_2}{k} + \text{mismatch} + 0.5 \cdot (k - 1) - 0.5 \cdot N_{\text{snap}}$$
-   - この `cost` が上限 **`max_cost = 5.5` 未満** の候補のみを採用プール `joins` に登録します。
-4. **1対1割当MILP (`one_to_one`, L973-L985, L1131-L1143)**:
-   - 各終端 `("e", e)`、各始端 `("s", s)`、および途中の各空き検出点 `("f", snap)` が**最大でも1つのギャップ結合にしか使われない**という制約行列 $A \mathbf{x} \le \mathbf{1}$ を組み、SciPy `milp` で総コスト最小の結合集合を一括選択して中間ノードとエッジを挿入します。
+#### 4-1. 変数と制約(Conservation Tracking型)
+各細胞に二値変数 *exists*($x_i$)、*appears*($a_i$)、*disappears*($d_i$)、*divides*($\delta_i$)、各候補リンクに $y_{ij}$ を置きます。流量保存制約は
+$$a_j + \sum_i y_{ij} = x_j \qquad d_i + \sum_j y_{ij} = x_i + \delta_i \qquad \delta_i \le x_i$$
+(親は1つか無し、子は1つか2つ)です。
 
-#### 4-2. オプション修復機能 (`rematch_ambiguous`, `join_adjacent`)
-リポジトリにはさらに2つの修復関数が実装されており、実験設定(`K1` 等)に応じて切り替え可能になっています(Writeup Section "Tracking - Repairs"):
-* **曖昧な連結成分の再マッチング (`rematch_ambiguous`, `utils.py` L988-L1049)**:
-  - 候補エッジの二部グラフ連結成分ごとに、採択されたリンクを1本外したときの目的関数低下量が `tau = 2.0` 未満である「僅差で決まった曖昧な成分」を検出し、外見非類似度重みを `0.7 → 3.0` に強めたハンガリアン法(`linear_sum_assignment`)で再マッチングします。
-* **隣接フレームの弱リンク結合 (`join_adjacent`, `utils.py` L1146-L1167)**:
-  - 時刻 $t$ のトラック終端と時刻 $t+1$ のトラック始端の間に、ILP3では漏れたが $0.10 < p \le 0.30$ かつ外見非類似度が `id_dissim < 0.35` と極めてよく似ている候補エッジが存在する場合、スコア $1 + p - \text{id\_dissim}$ を最大化する `one_to_one` MILPで結合します。
+#### 4-2. 目的関数のコスト (`build_event_graph`, `solver.py` L129-L227)
 
----
+$$\min \sum_i c^{node}_i x_i + \sum_i c^{app}_i a_i + \sum_i c^{dis} d_i + \sum_i c^{div}_i \delta_i + \sum_{(i,j)} c^{edge}_{ij} y_{ij}$$
 
-### ◆Stage5. 運動保存直線スムージング・1フレーム補間・サブボクセルCSV出力
+| 項 | コスト | 意味 |
+|---|---|---|
+| 細胞 $c^{node}_i$ | $-\ell_i$(中心ロジット) | **損益分岐点が $p = 0.5$**。$p > 0.5$ の細胞は採用すると得(負のコスト)。**唯一負になり得る項** で、これが無いと空グラフが最適解になってしまう |
+| 出現 $c^{app}_j$ | $-\log P_T(\text{null} \mid j) + 0.5$ | ネットワークの「新規細胞」確率をそのまま使用。先頭フレームの細胞は出現無料 |
+| 消失 $c^{dis}$ | $12$ | モデルに消失ヘッドが無いので定数。かなり高く、トラックの途切れを強く嫌う |
+| 分裂 $c^{div}_i$ | $\max(0, -\ell^{div}_i)$ | 分裂ロジットが正なら無料、ただし **分裂がソルバーに報酬を与えることはない**(下限0) |
+| リンク $c^{edge}_{ij}$ | $-\log P_T(i \mid j) + 0.2 \cdot \tilde{d}_{ij}$ | 再スコア・アンサンブル済みの親確率 + ドリフト補正距離(µm) |
 
-パイプラインの最終仕上げとして、`utils.py` の `smooth_track_coords()` (L727-L819)、`fill_track_gaps()` (L822-L908)、および `write_submission()` (L1171-L1216)が実行されます。
+* **温度付き再正規化 (`temper_parent_softmax`, L107-L126)**: $\log P_T = (\log \bar{P}) / T$ を候補+nullで再正規化します($T = 0.9$ で少しだけ尖らせる)。ILPの係数には温度後の値を使い、グラフの `edge_prob` 属性には温度前の確率を残します(擬似ラベルの重みに使うため)。
+* **ドリフト補正距離 (`drift_corrected_distance`, L73-L104)**: フレーム $t \to t+1$ について、**各ターゲットの最尤親のうち $P \ge 0.7$ のものの変位の中央値** をステージシフト $\mathbf{s}_t$ とし、各リンクの変位からそれを引いたノルム $\tilde{d}_{ij} = \|\Delta_{ij} - \mathbf{s}_t\|$ をコストにします。解く前のモデル自身の確信リンクだけを使い、GTもソルバーも使いません。**+0.009**(検証)。
 
-#### 5-1. 運動保存付き局所直線フィッティング平滑化 (`smooth_track_coords`, Public +0.004 / Private +0.005)
-検出された細胞中心は、4倍縮小グリッドの境界付近などでフレームごとに微小なジッター(ブレ)を持ちます。しかし、胚全体の組織移動(ドリフト)が含まれたまま時間平滑化を行うと軌道が内側に潰れてしまいます。そこで以下の手順で座標のみを洗練します:
-1. **全体運動(`motion`)の抽出と一時除去 (`smooth_preserve_motion = True`, L748-L770)**:
-   - 分岐や合流を含まない1対1リンク($t \to t+1$)の全変位ベクトルを集め、フレームごとに変位の中央値 `velocity[t]` を算出します。
-   - その時間累積和 `motion` を各フレームの全ノード座標から一旦差し引き、組織全体が静止した座標系に変換します。
-2. **前後 `±4` フレームの最小二乗直線フィッティング (L772-L798)**:
-   - 各ノード $i$ から、分岐を含まない単一鎖に沿って過去方向に最大 `win = 4` フレーム、未来方向に最大 `win = 4` フレーム(最大9点)のチェーンを辿ります。
-   - 相対時刻 $\Delta t = t_{\text{chain}} - t_i$ に対する3次元座標 $\mathbf{Y}$ の最小二乗直線の切片($\Delta t = 0$ での予測位置)
-     $$\hat{\mathbf{y}}_i = \bar{\mathbf{Y}} - \frac{\Delta \mathbf{t}^\top (\mathbf{Y} - \bar{\mathbf{Y}})}{\Delta \mathbf{t}^\top \Delta \mathbf{t}} \cdot \overline{\Delta t}$$
-     を解析的に計算し、元の座標と **`w = 0.825` (82.5%直線 + 17.5%元座標)** の重みでブレンドします。
+> [!IMPORTANT]
+> **「全ての細胞と全ての出現に値段が付いている」ので、ILPは中途半端な断片を残さず、修復ヒューリスティックが不要** というのが6位解法の主張です。5位解法がILP1〜ILP4の多段構成でギャップ結合や足場リンクを駆使したのとは対照的に、6位は **「ネットワークの確率を較正しておけば、ILPは1回で十分」** という設計思想です。実際、Writeupでは「ソルバー側でのIdentity Swap対策(Z割引距離、平滑化後の再リンク)は +0.0001 しか効かず、**ソルバーはリンカーに従うだけなので、Swapはネットワークで直すしかない**」と結論付けています。
 
-3. **最大シフト量キャップ(`smooth_max_shift_um = 4.5 µm`)と運動復元 (L805-L818)**:
-   - 急激に曲がる軌道などで直線フィットが元の検出核から離れすぎないよう、物理単位(`SMOOTH_VOXEL_UM = (1.625, 0.40625, 0.40625)`)での移動距離が **`4.5 µm` を超えた場合は `4.5 µm` にクランプ**し、最後にステップ1で引いた全体運動 `motion` を足し戻します。
+#### 4-3. LP-first ソルバー (`solve_lpfix`, `lpfix.py` L43-L133)
+1. **疎行列で制約を構築 (L74-L86)**: 変数を `[node, appear, disappear, division, edge]` の順に並べ、入流量・出流量の等式制約と、`division ≤ node` の不等式制約を `scipy.sparse` で作ります。**全単模性を壊すのは `division ≤ node` の行だけ** です。
+2. **LP緩和 (L88-L94)**: `scipy.optimize.linprog(method="highs")` で連続LPを解きます。ネットワーク行列なのでほぼ整数解。
+3. **3-hop近傍だけ開放 (L96-L107)**: `|x - round(x)| > 1e-6` の端数変数から、変数-制約の二部グラフを **3ステップ** 辿った近傍だけを自由変数にし、残りはLPの値に固定。
+4. **小さなMILP (L109-L122)**: `scipy.optimize.milp`(HiGHS, `mip_rel_gap=0.0`)で解きます。LPの目的値が下界になるので、相対ギャップ `rel_gap` で最適性を保証できます。
 
-#### 5-2. 2段階の1フレーム欠損補間 (`fill_track_gaps`, `utils.py` L822-L908)
-スムージングによってトラック端点の速度ベクトルが綺麗になった後、残っている **1フレームの欠損($t_e \to t_e + 2$)** を補間します:
-* 時刻 $f$ のトラック終端 $e$ と時刻 $f + 2$ のトラック始端 $s$ のうち、距離が `gate_um = 10.0 µm` 以内のペアを探索。
-* 補間ステップ $\text{step} = (\mathbf{u}_s - \mathbf{u}_e) / 2$ と、直前速度 $\mathbf{v}_{\text{before}}$・直後速度 $\mathbf{v}_{\text{after}}$ とのズレ `residual` がともに **`velocity_residual_um = 3.0 µm` 以下** であり、かつ中点 $\mathbf{m} = (\mathbf{u}_e + \mathbf{u}_s) / 2$ の半径 **`occupied_um = 3.0 µm` 以内に既存ノードが存在しない**ペアを候補とします(L858-L874)。
-* **2パス貪欲選択 (L879-L907)**:
-  - **第1パス (`strict = True`)**: 直前速度・直後速度の両方と進行方向が一致している(`step @ before >= 0` かつ `step @ after >= 0`)確実なペアを、コスト `residual + 0.1 * ||step||` の小さい順に採用します。
-  - **第2パス (`strict = False`)**: 方向内積条件を満たさなかった残りのペアについても、第1パスで追加された合成ノードと `3.0 µm` 以内で衝突しない限り追加採用します。
+#### 4-4. 必ず実行可能解を返す3段構え (`solve_event_ilp`, `solver.py` L230-L295)
+* LP-first の答えがLP下界から **0.5%以内**(`lp_first_gap = 0.005`)ならそれを採用(38〜166倍高速)。
+* そうでなければ `tracksdata.solvers.ILPSolver`(SCIP, `gap=0.0`)を実行。ただし残り時間が少なければLP-firstの暫定解を採用し、SCIPが時間切れ・空解ならやはり暫定解に戻します。
+* どちらも無ければ、**同じ目的関数の貪欲解**(`greedy_solution`, L306-L345: コストの安い順に、合法かつ目的関数を下げるリンクだけを採用)を返します。
 
-#### 5-3. なぜ最終CSVの座標を整数丸めせず `float` (小数第3位)で出すのか？ (`write_submission`, `utils.py` L1171-L1216)
-コンペ主催者の公開コード(`unet-baseline-inference-submission.ipynb`)では、最終CSVを作成する際に `int(round(r["z"]))` と整数ボクセルに丸めていました。
-しかし、`utils.py` (L1191-L1198)のコメントに極めて重要な知見が記されています:
-> **「公式評価指標はユークリッド距離でノードをマッチングする。フル解像度グリッドであってもZ軸の1ボクセルは `1.625 µm` もあるため、整数に丸めるとZ座標が `1.625 µm` 単位で量子化されてしまい、スムージングによってホールドアウト検証で稼いだ `+0.0246` のゲインのうち `0.0074` をドブに捨てることになる」**
-
-そのため5位解法では、`round(float(r["z"]), 3)` のように**小数第3位までの浮動小数点(`float`)**として座標を出力し、対数放物線補正と直線スムージングで得たサブボクセル精度を100%評価指標へ届けています。
-
-#### Stage4 & Stage5. ソースコード一覧
+#### Stage4. ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
 | :--- | :--- | :---: | :--- |
-| `inference.py` | `solve_graph()` (後半: 修復・平滑化・補間) | L391-L397 | `close_gaps()`(ILP4) → `smooth_track_coords()` → `fill_track_gaps()` を順次呼び出し |
-| `utils.py` | `best_assignment()`, `one_to_one()` | L966-L985 | ハンガリアン法およびSciPy `milp` による重複なし1対1最小コスト割当ヘルパー |
-| `utils.py` | `rematch_ambiguous()` | L988-L1049 | マージン `< tau` の曖昧な候補エッジ連結成分を、高い外見重み(`idsim=3.0`)で再マッチング(オプション) |
-| `utils.py` | `track_ends()`, `by_frame()`, `run_length()` | L1052-L1081 | トラック終端・始端の抽出、フレーム別KDTree構築、トラック連続長のカウント |
-| `utils.py` | `close_gaps()` (ILP4) | L1084-L1143 | 長さ8以上・$q \ge 0.85$ の端点間で2〜10fギャップを探索し、空き検出スナップ(`3.5µm`)と衝突回避(`3.0µm`)付きMILPで結合 |
-| `utils.py` | `join_adjacent()` | L1146-L1167 | 1フレーム差の端点間を、外見が酷似(`id_dissim < 0.35`)した弱リンク($0.1 < p \le 0.3$)で1対1結合(オプション) |
-| `utils.py` | `smooth_track_coords()` | L727-L819 | 非分岐リンクの中央値変位から全体運動 `motion` を除去し、前後 `±4` フレームの直線フィット(`w=0.825`, 上限 `4.5µm`)後に運動を復元 |
-| `utils.py` | `fill_track_gaps()` | L822-L908 | 1フレーム欠損($t \to t+2$)に対し、速度残差 `<= 3.0µm`・既存ノード距離 `>= 3.0µm` の条件で中点ノードを2パス挿入 |
-| `utils.py` | `write_submission()` | L1171-L1216 | 各動画の `.geff` グラフを読み込み、座標を `round(val, 3)` の浮動小数点で `submission.csv` に書き出し |
+| `isotropic/predict.py` | `combine_pair_terms()`, `predict_movie()` | L309-L332, L541-L617 | フレームペアの値を動画全体のフラット配列に展開し、距離計算 → グラフ構築 → ILP求解 |
+| `isotropic/solver.py` | `drift_corrected_distance()` | L73-L104 | $P \ge 0.7$ の最尤親の変位中央値をステージシフトとして除いた距離 |
+| `isotropic/solver.py` | `temper_parent_softmax()` | L107-L126 | 候補+nullの温度付き再正規化($T=0.9$) |
+| `isotropic/solver.py` | `build_event_graph()` | L129-L227 | 細胞・出現・分裂・リンクのコストを持つ `tracksdata.InMemoryGraph` の構築 |
+| `isotropic/solver.py` | `solve_event_ilp()`, `_solve_lp_first()`, `_lpfix_graph()` | L230-L295, L348-L418 | LP-first → SCIP → 貪欲法の3段構えと、解のサブグラフ化 |
+| `isotropic/solver.py` | `greedy_solution()` | L306-L345 | 同じ目的関数での1パス貪欲解(最終手段) |
+| `isotropic/lpfix.py` | `LPFixResult`, `solve_lpfix()` | L21-L133 | HiGHS LP緩和 → 端数変数の3-hop近傍のみの制限付きMILP、LP下界による相対ギャップ |
+| `isotropic/config.py` | `SolverConfig` | L57-L87 | 消失12.0、距離重み0.2、温度0.9、出現バイアス0.5、3-hop、ギャップ0.005 |
 
-#### Stage4 & Stage5. シーケンス図
+#### Stage4. シーケンス図
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Solve as inference.py<br/>solve_graph() (L391-L397)
-    participant Gap4 as utils.py<br/>close_gaps() (ILP4)<br/>& one_to_one()
-    participant Smooth as utils.py<br/>smooth_track_coords()<br/>(L727-L819)
-    participant Fill1 as utils.py<br/>fill_track_gaps()<br/>(L822-L908)
-    participant Sub as utils.py<br/>write_submission()<br/>(L1171-L1216)
+    participant Pred as predict.py<br/>predict_movie()
+    participant Solver as solver.py
+    participant LP as lpfix.py<br/>solve_lpfix()
+    participant SCIP as tracksdata<br/>ILPSolver (SCIP)
 
-    Solve->>Gap4: close_gaps(es3, prediction, scale, gaps=(2, 10)) (L393-L394)
-    Note over Gap4: 1. 長さ >= 8 かつ 確信度 q >= 0.85 のトラック終端(ends)と始端(starts)を抽出<br/>2. k = 2..10 フレーム差・距離 <= 12.0µm のペアについて速度ズレ mismatch を計算<br/>3. 中間フレームで既存ノードと 3.0µm 以内なら衝突棄却、未採用検出(free_at)と 3.5µm 以内ならスナップ(-0.5割引)<br/>4. cost < 5.5 の全候補を one_to_one(MILP) で1対1割当し、中間ノードとエッジを追加
-    Gap4-->>Solve: ギャップ結合済みグラフ graph
-
-    Solve->>Smooth: smooth_track_coords(cfg, graph) (win=4, weight=0.825, max_shift=4.5µm) (L397)
-    Note over Smooth: 1. 1対1リンク変位の中央値からフレーム全体の共通運動 motion を推定・減算<br/>2. 単一鎖に沿って前後±4フレーム(最大9点)に最小二乗直線を当てはめ<br/>3. 0.825 * 直線予測 + 0.175 * 元座標 でブレンドし、シフト量を 4.5µm 以内に制限<br/>4. 全体運動 motion を加算して元の座標系へ復元
-    Smooth-->>Solve: 平滑化済みグラフ graph
-
-    Solve->>Fill1: fill_track_gaps(cfg, graph, scale) (gate=10µm, vres=3.0µm, occupied=3.0µm) (L397)
-    Note over Fill1: 1. 1フレーム欠損(t -> t+2)で距離<=10µm、前後速度残差<=3.0µm、中点周囲3.0µmに既存ノード無しの候補を抽出<br/>2. Pass 1 (strict=True): 進行方向内積 >= 0 のペアを優先挿入<br/>3. Pass 2 (strict=False): 残りのペアを合成ノード同士の衝突回避付きで挿入
-    Fill1-->>Solve: 最終予測グラフ (.geff 保存)
-
-    Solve->>Sub: write_submission(cfg, ids) (L206)
-    Note over Sub: 全動画の .geff を読み込み、Z軸の量子化誤差を防ぐため<br/>座標を round(float(val), 3) の浮動小数点で submission.csv に出力
+    Pred->>Solver: drift_corrected_distance(coords, edge_index, logp) (L590)
+    Note over Solver: 各ターゲットの最尤親 (P≥0.7) の変位中央値 = ステージシフト s_t<br/>距離 = ‖Δ - s_t‖
+    Pred->>Solver: build_event_graph(...) (L591-L594)
+    Note over Solver: temper_parent_softmax(T=0.9)<br/>node = -logit / appear = -logP(null)+0.5<br/>div = max(0, -div_logit) / edge = -logP + 0.2×距離
+    Pred->>Solver: solve_event_ilp(track, timeout) (L596)
+    Solver->>LP: solve_lpfix(hops=3, time_limit=残りの半分)
+    LP->>LP: linprog(HiGHS) で LP緩和
+    LP->>LP: 端数変数 → 3-hop近傍を開放, 他はLP値で固定
+    LP->>LP: milp(mip_rel_gap=0) で制限付きMILP
+    LP-->>Solver: kept_nodes, kept_edges, rel_gap
+    alt rel_gap ≤ 0.5%
+        Solver-->>Pred: LP-first の解
+    else ギャップ超過
+        Solver->>SCIP: ILPSolver(gap=0).solve(graph)
+        alt SCIP 時間切れ / 空解
+            Solver-->>Pred: LP-first 暫定解 (無ければ greedy_solution)
+        else 成功
+            SCIP-->>Pred: 最適解
+        end
+    end
+    Pred->>Pred: <stem>.geff として保存
 ```
+
+---
+
+### ◆Stage5. 最小修復・ドリフト補償直線スムージング・CSV出力
+
+`pipeline.py::run_pipeline()` (L275-L296)で、各動画の解グラフに最小限の後処理を施してCSVにします。
+
+#### 5-1. 構造制約の最小修復 (`minimal_repair`, `pipeline.py` L59-L98)
+提出フォーマットの構造契約(**入次数 ≤ 1、出次数 ≤ 2、全エッジが連続フレーム間、ぶら下がりエッジ無し**)だけを強制し、それ以外は一切変えません。違反があれば **確率の低いエッジから捨てる** よう、確率の降順に走査します。ILPの解は通常この契約を満たしているので、実質的には安全装置です。
+
+#### 5-2. ドリフト補償直線スムージング (`smooth_positions` L140-L162, `linefit_smooth_output_graph` `smoothing.py` L29-L87)
+Z軸は1.625µmで量子化されており、位置誤差の大部分を占めるため、トラックに沿って座標を平滑化します。
+1. **累積ステージドリフトの除去 (`stage_offsets`, `pipeline.py` L101-L128)**: 解かれた **1対1リンク(分裂エッジ除外)** の変位の中央値をフレームごとのステップとし、その累積和をフレーム $t$ のオフセットとして全細胞から引きます。
+2. **前後±2フレームの直線フィット (`_line_intercept`, `smoothing.py` L15-L26)**: 各細胞から、分裂・合流で止まる単一鎖に沿って前後最大2フレーム(最大5点)を集め、**3点以上ある場合のみ** 軸ごとに1次の最小二乗直線を当てはめ、自分の時刻での値を求めます。
+   $$\hat{\mathbf{y}}_i = (1 - w)\,\mathbf{y}_i + w \cdot \text{fit}_i(0), \qquad w = 0.8$$
+3. **ドリフトを戻す**: 引いたオフセットを足し戻します。素の平滑化に比べて **+0.005**。
+4. **ボリューム内クランプ (`clamp_to_volume`, L176-L188)**: 平滑化で鎖の端点がボリューム外に外挿されることがあるので、`[0, dim-1]` にクリップします。
+
+5位解法の「運動保存直線スムージング(±4f, w=0.825, 上限4.5µm)」とほぼ同じ発想ですが、6位はウィンドウが±2と短く、シフト上限はありません。
+
+#### 5-3. CSV出力 (`write_test_submission`, `submission.py` L17-L84)
+ノード座標は `max(0, int(round(z)))` のように **整数ボクセルに丸めて** 出力され(L45-L47)、`validate_submission()` (L85-)でフォーマットと全動画の網羅を検証します。
+
+> [!NOTE]
+> 5位解法のコードコメントには「Z軸1ボクセル=1.625µmなので、整数に丸めると平滑化で稼いだゲインの一部(-0.0074)を失う」という知見がありました。6位解法は平滑化後に整数丸めをしているので、ここをfloat出力にしていれば、もう少しスコアが伸びた可能性があります(あくまで5位の知見からの推測です)。
+
+#### Stage5. ソースコード一覧
+| ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
+| :--- | :--- | :---: | :--- |
+| `isotropic/pipeline.py` | `graph_to_dicts()` | L31-L56 | `.geff` の解グラフをノード・エッジの辞書に読み込み |
+| `isotropic/pipeline.py` | `minimal_repair()` | L59-L98 | 入次数≤1・出次数≤2・連続フレーム・ぶら下がり無しを、低確率エッジから捨てて強制 |
+| `isotropic/pipeline.py` | `stage_offsets()`, `_moved()`, `smooth_positions()` | L101-L162 | 1対1リンク変位中央値の累積ドリフトを除去 → 平滑化 → 復元 |
+| `postprocess/smoothing.py` | `_line_intercept()`, `linefit_smooth_output_graph()` | L15-L87 | 前後±2フレームの単一鎖に1次最小二乗フィット、`0.2×元 + 0.8×フィット` |
+| `isotropic/pipeline.py` | `clamp_to_volume()`, `run_pipeline()` | L176-L304 | ボリューム内クランプ、空動画のフォールバック、CSV書き出しと検証、タイミング集計 |
+| `submission.py` | `write_test_submission()`, `validate_submission()` | L17-L120 | 整数丸めでのCSV出力と、フォーマット・動画網羅の検証 |
+
+#### Stage5. シーケンス図
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Run as pipeline.py<br/>run_pipeline()
+    participant Repair as minimal_repair()
+    participant Smooth as smooth_positions()<br/>& smoothing.py
+    participant Sub as submission.py
+
+    loop 各動画 (stem)
+        Run->>Run: _movie_or_fallback(): .geff 読込 (無ければ DoG フォールバック)
+        Run->>Repair: minimal_repair(nodes, edges) (L280)
+        Note over Repair: 確率の高い順に走査し<br/>入次数≤1・出次数≤2・t→t+1 のみ残す
+        Repair-->>Run: nodes, edges, stats
+        Run->>Smooth: smooth_positions(drift_compensated=True) (L281-L284)
+        Smooth->>Smooth: stage_offsets(): 1対1リンク変位中央値の累積和
+        Smooth->>Smooth: 全細胞からオフセットを引く
+        Smooth->>Smooth: 前後±2f (3点以上) の直線フィット, 0.2×元 + 0.8×フィット
+        Smooth->>Smooth: オフセットを足し戻す
+        Smooth-->>Run: 平滑化済み nodes
+        Run->>Run: clamp_to_volume() (L285)
+    end
+    Run->>Sub: write_test_submission(movies) (L294)
+    Note over Sub: 座標を int(round()) で出力
+    Run->>Sub: validate_submission(expected_datasets) (L295)
+```
+
+
+---
+
+## 学習パイプライン: 3%のアノテーションから「Detect, Link, Solve, Repeat」
+
+6位解法の真骨頂は推論よりもむしろ学習側にあります。タイトルの「Repeat」はここを指しています。
+
+### T-1. 3状態の検出ターゲット (`training/targets.py`)
+
+| 状態 | 定義 | 損失重み |
+|---|---|---|
+| **正例** | アノテーション中心から3µm以内。ターゲットはガウシアン(σ=1.5µm)で、最寄りのグリッドセルは1.0 | フル |
+| **検証済み背景** | フレームの中央値より暗く、かつ全アノテーションから6µm以上離れている | フル |
+| **未知** | それ以外(未アノテーションの細胞がいる可能性がある領域) | **0** |
+
+* `build_detection_targets()` (L53-L156)は、まず全アノテーション点の周囲6µm(ignore band)の重みを0にクリアしてから、正例ボール(3µm)とガウシアンを書き込みます。最寄りセルにはオフセットのターゲット(セル内の残差)も書き込みます。
+* 擬似ラベルの点は別マップ(`pseudo_weight`)に書かれ、**GTや検証済み背景が監督しているボクセルでは擬似ラベルを0** にします(L146)。
+
+### T-2. 損失関数 (`training/losses.py`)
+
+中心とリンクの損失は、GTと擬似ラベルで別々に計算して **$L = L_{GT} + 0.5 \cdot L_{pseudo}$** と合成します。疎なGTが擬似ラベルに埋もれないようにするためです。
+
+| 損失 | 重み | 実装 | 内容 |
+|---|---:|---|---|
+| ペナルティ低減Focal損失(中心) | 1.0 | `center_focal_loss` L59-L98 | 監督ボクセルのみ。正例と負例を別々に正規化 |
+| サブボクセルオフセット | 1.0 | `offset_loss` L101-L110 | Smooth L1(β=0.1セル)、アノテーション細胞のみ |
+| 親の交差エントロピー(候補+新規細胞) | 1.0 | `parent_loss` L113-L142 | 親を意図的に削除したターゲットは null が正解 |
+| 分裂BCE | 0.5 | `division_loss` L169-L182 | 正例重み20、GTのみ |
+| 娘ペアBCE | 0.25 | `daughter_loss` L199-L205 | 学習専用ヘッド |
+| 速度ガウスNLL | 0.1 | `velocity_nll` L185-L196 | $\frac{1}{2}\left((v - v_{gt})^2 e^{-\log\sigma^2} + \log\sigma^2\right)$、GTのみ |
+| Count Prior | 1.0 | `count_prior_loss` L208-L228 | 予測ヒートマップ総和 ÷ 期待質量 を1に引き寄せる Smooth L1(β=0.2) |
+
+中心のFocal損失は、$p = \sigma(\text{logit})$、ターゲット $y$ に対して($\alpha = 2, \beta = 4$)
+$$L_{pos} = -\frac{\sum_{pos} w\,(1-p)^{\alpha}\log p}{\sum_{pos} w}, \qquad L_{neg} = -\frac{\sum_{neg} w\,(1-y)^{\beta} p^{\alpha}\log(1-p)}{\sum_{neg} w}$$
+で、$w$ は3状態マスク(未知=0、擬似ラベルは教師の確信度)です。1クロップに正例は数個、検証済み背景は数十万ボクセルあるので、正例と負例を別々に正規化するのが重要です。
+
+Count Priorは、未知領域に損失が無いことの穴埋めです。
+$$L_{count} = \text{SmoothL1}\left(\frac{\sum \sigma(\text{logit})}{N_{est} \times \frac{\text{クロップ体積}}{\text{動画体積}} \times \text{ガウス質量}},\; 1\right)$$
+これが無いと、検出器は未知領域で撃ちまくるそうです。
+
+* **リンク損失のウォームアップ (`trainer.py` L113-L114, L238-L242)**: スクラッチ学習では、最初の300ステップはリンク関連4損失をオフにし、次の300ステップで線形に立ち上げます。「まだ何も位置を特定できない特徴」でリンカーを学習させないためです。
+
+### T-3. リンクの学習サンプル (`training/candidates.py`, `training/dataset.py`)
+* 推論と同じk-NN候補グラフ(k=4双方向, ≤20µm)を使い、k-NNが取りこぼしたGTの親リンクは追加します。
+* **ディストラクタ (`_distractor_points`, `dataset.py` L484-)**: アノテーションの無い明るい輝度ピーク(1フレーム最大256個、最後のファインチューニングB・Cでは64個)をノードとして追加します。ソースとしてのディストラクタは **「確実に間違った親」**、ターゲットとしてのディストラクタは親不明(損失なし)として扱います。
+* **親の15%を意図的に削除 (`parent_drop_probability = 0.15`, `dataset.py` L79)**: 削除したターゲットには「新規細胞」ラベルを付け、nullクラスを学習させます。
+* MultiScaleモデルは、マッチしたアノテーション細胞の75%を **検出器自身の検出位置に置き換えて** リンカーを学習させ、推論時の入力分布に近づけています。
+
+### T-4. サンプリングとデータ拡張 (`training/dataset.py`, `training/augment.py`)
+* **サンプル**: 3フレームのフルフレームクロップ(`64×256×256`)。15%は一様ランダムな位置、残りのうち25%は分裂中心、それ以外はアノテーション細胞中心。
+* **拡張**:
+  - 横方向D4のみ(Zは反転しない)
+  - ガンマ補正、ガウシアンノイズ
+  - **合成ステージドリフト (`sample_drift` / `apply_drift`, L136-L179)**: フレームを横方向にランダムウォークでずらす(1ステップ最大6µm)
+  - **Noisy Studentのノイズ**: ショットノイズ、平均を保つ深さゲイン、ファインチューニング時はチャネルDropout 0.2・Weight Decay 0.01
+  - **低コントラストのもや(haze, `degrade_contrast`, L181-)**: 各フレームを、横方向41ボクセル(約17µm)の箱フィルタでぼかした自分自身とランダムなコントラストで合成し、深くてもやのかかった動画を模倣(**+0.005**, 検証)
+* **最適化**: AdamW、線形ウォームアップ+コサイン減衰、勾配クリップ1、**EMA(0.999)の重みを推論に使用**、RTX 3090/4090でbf16混合精度。スクラッチは lr 1e-4・32エポック(1エポック2,048クロップ)、ファインチューニングは 3e-5・24〜48エポック。
+
+### T-5. 擬似ラベルと Teacher → Student (`labels.py`, `training/pseudo.py`)
+
+> [!IMPORTANT]
+> **教師は1つのネットワークではなく、パイプライン全体**(デコード → リンク → 再スコア → ILP)です。
+
+**擬似ラベルの作り方 (`biohub-pseudo-labels`, `labels.py`)**
+1. **教師パイプラインを全訓練動画で実行**(`teacher_labels`, L81-L97): 推論と全く同じ `predict_movie()` を使います。
+2. **トポロジーはILPの解から**(`labels_from_graph`, L30-L56): ILPのリンクは、ネットワークの細胞ごとのargmaxよりはるかに正確です(アノテーション系譜上で **0.949 vs 0.885**)。
+3. **座標は平滑化前の生検出から**: 平滑化は指標には効くが、点を真の中心から動かしてしまうため。
+4. **撮像コホートごとの位置合わせ**(`cohort_offsets`, L59-L78): 教師の細胞は、アノテーターが付けた位置から系統的に少しズレている(Zで最大0.5µm、コホート `44b6`/`6bba` 依存)。検証動画上でハンガリアン法(4µm以内)でマッチングして平均ズレを測り、差し引きます。
+5. **教師の確率を保持**: 細胞ごとの中心確率、リンクごとの親確率を、学習時の損失重みに使います。
+6. 公開テスト4動画には **決してラベルを付けません**(L131-L134で拒否)。
+
+**学習時のラベル統合 (`merge_pseudo`, `pseudo.py` L72-L152)**
+- 同じフレームでアノテーション細胞から4µm以内の擬似細胞は、**そのアノテーション細胞そのもの** とみなす(ハンガリアン法)。
+- アノテーションの親・子と矛盾する擬似リンクは捨てる(GTが優先)。
+- 確率0.5未満の擬似細胞・擬似リンクは捨てる。
+- 分裂・速度・サブボクセルオフセットはGTのみで監督。
+
+最終的なラベルセットは **195動画で約500万細胞・490万リンク、アノテーションの約38倍** になりました。
+
+#### 最終モデルの学習系譜
+
+```mermaid
+flowchart TD
+    GT["GT (アノテーション 約3%)"] --> W["W-link-s2<br/>(GTのみ, round-0 教師)"]
+    W -->|"擬似ラベル"| P["P-l50-s2"]
+    P -->|"初期値 + 擬似ラベル"| R2["R2-ft24-noisy-s1"]
+    R2 -->|"初期値 + 擬似ラベル"| R3["R3-ft24-noisy-lc-s1<br/>= モデルA"]
+    R3 -->|"擬似ラベル (195動画)"| NS1["NS1-ft24-noisy-lc-s1"]
+    NS1 -->|"擬似ラベル"| BX["BX-wide-lc-s2"]
+    R3 -->|"擬似ラベル (195動画)"| CX["CX-deep-lc-s3"]
+
+    R3 --> V10["v10 教師 (3モデル)<br/>R3 + BX(best-e23) + CX(best-e20)<br/>Public 0.958"]
+    BX --> V10
+    CX --> V10
+    R3 --> V11["v11 教師 (3モデル)<br/>R3 + BX + CX<br/>Public 0.959"]
+    BX --> V11
+    CX --> V11
+
+    V10 -->|"擬似ラベル"| B2["B2-v10-e48 (初期値 BX)"]
+    V10 -->|"擬似ラベル"| DX["DX-widedeep-e48"]
+    V11 -->|"擬似ラベル + 初期値 B2"| B3["B3-v11-ft32 = モデルB"]
+    V11 -->|"擬似ラベル + 初期値 DX"| D2["D2-v11-ft32 = モデルC"]
+    V11 -->|"擬似ラベル (スクラッチ)"| MS["EX / FX / GX (MultiScale)<br/>= モデルD / E / F"]
+```
+
+- 最初の1周(GTのみ → 擬似ラベル学習)が単一で最大の改善で、GTのみのモデルに対して検証 **+0.008**。
+- その後、単純な自己蒸留は頭打ちになり、以降の改善は **新しいアーキテクチャ、新しい動画分割、そしてアンサンブル教師** から得られました。
+- アンサンブル教師(v10, v11)は「3モデル+メンバー専用再スコアラー」のパイプラインで、それぞれ提出するとPublic 0.958 / 0.959でした。
+
+#### 学習側ソースコード一覧
+| ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
+| :--- | :--- | :---: | :--- |
+| `training/targets.py` | `build_detection_targets()`, `reduce_background()` | L53-L156, L216- | 3状態ターゲット(正例3µm / ignore 6µm / σ1.5µm)、オフセットターゲット、検証済み背景の縮約 |
+| `training/losses.py` | `LossWeights`, `center_focal_loss()`, `offset_loss()`, `parent_loss()` | L22-L142 | 損失重み(擬似ラベル0.5、分裂正例重み20)、Focal損失、オフセット、親+nullの交差エントロピー |
+| `training/losses.py` | `division_loss()`, `velocity_nll()`, `daughter_loss()`, `count_prior_loss()` | L169-L228 | 分裂BCE、速度ガウスNLL、娘ペアBCE、Count Prior |
+| `training/dataset.py` | `DataConfig`, `_node_sets()`, `_distractor_points()` | L54-L91, L357-L400, L484- | ランダムクロップ15%、ディストラクタ、親削除15%、座標ジッター |
+| `training/augment.py` | `sample_drift()`, `apply_drift()`, `degrade_contrast()` | L136-L200 | 合成ステージドリフト(≤6µm/ステップ)、低コントラストhaze |
+| `training/trainer.py` | `TrainConfig`, `association_scale()`, `Trainer` | L93-L260 | 検出のみ300ステップ → リンク損失300ステップで立ち上げ、EMA |
+| `labels.py` | `labels_from_graph()`, `cohort_offsets()`, `teacher_labels()`, `main()` | L30-L157 | 教師パイプラインによるILPトポロジー+生座標の擬似ラベル、コホート別位置合わせ |
+| `training/pseudo.py` | `merge_pseudo()` | L72-L152 | 4µmマッチング、GT優先、確率0.5未満の除外 |
+| `recipes/train/*.json`, `recipes/ensembles/*.json` | — | — | 全14学習ランと教師/提出アンサンブルのレシピ |
 
 ---
 
 ## アブレーションスタディと実験の知見
 
-[解説記事](https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/5th-place-3d-u-net-transformer-linker-multi-s)および `config.py` の実験ログに記載されている、各改善要素のリーダーボード効果と重要な知見のまとめです。
+[解説記事](https://www.kaggle.com/competitions/biohub-cell-tracking-during-development/writeups/6th-place-solution)および `docs/SOLUTION.md` に記載されている、各改善要素の効果と重要な知見のまとめです。
 
-### 1. スコア向上の主要マイルストーン (Writeup Results)
+### 1. 検証・評価の方法
+- **ローカル指標**: 公式指標(動画ごとの重み付け含む)の再実装。Kaggleノートブックが公開テスト4動画で書き出すCSVは、ローカルでも全く同じスコアになることを確認済み。
+- **分割**: 各モデルは165動画で学習、自分専用の30動画で検証。公開テスト4動画は全モデルの学習から除外。**モデルAの30検証動画で、アンサンブルを含む全ての変更を順位付け**。
+- **チューニング**: モデルや推論の変更ごとに小さなソルバーグリッド(消失・出現バイアス・距離重み・温度・平滑化)を回し、検証動画上の2-fold CVと **動画単位のペアードブートストラップ** で比較。
+- 分裂項はローカル値から除外(全コーパスで分裂151個しかなく、変更を順位付けるにはノイズが大きすぎる)。
 
-| 追加・改良した手法 | 対応Stage | Public LB 効果 | Private LB 効果 | 技術的ポイント |
-| :--- | :---: | :---: | :---: | :--- |
-| **① リンカーへの新規細胞(`appearance`)・分裂(`division`)ヘッド追加** | Stage2 | **+0.020** | **+0.024** | **単一で最大のスコア向上**。正例重み(`pos_weight=10, 20`)とGT親次数ラベル維持により、稀な分裂と視野流入を直接検知してILPコストへ反映。 |
-| **② トラッキング: 検出確信度 $q_i$ をILPのノードコストに導入** | Stage3 | **+0.008** | **+0.020** | **Private LBで第2位の巨大ゲイン**。`-8.0 * (q - 0.96)` のノードコストにより、検出閾値を `0.60` まで下げてギャップを埋めつつ偽陽性トラックを抑止。 |
-| **③ 公開ZebraHubデータセット(4種)による事前学習** | 学習時 | **+0.014** | **+0.016** | `ZSNS001, 003, 004, 005` のランダム3Dクロップで事前学習してからコンペデータへファインチューニング。未知の胚(Private)への汎化性能が大きく向上。 |
-| **④ 5-fold アンサンブル (最終は3世代11モデル)** | Stage1, 2 | **+0.008** | **+0.007** | クリップ種別(`44b6`/`6bba`)とクリップ内分裂数(`0, 1, 2+`)で層化した5-fold CVモデルのロジット・特徴平均。 |
-| **⑤ XY平面の8方向反転・回転TTA (`8fixed`)** | Stage1, 2 | **+0.007** | **+0.005** | Z軸の異方性・減衰を考慮してXY平面の二面体群8変換のみに限定し、検出・外見埋め込み・リンカーの全段階で8ビューを融合。 |
-| **⑥ 多段ILP: ILP2(低閾値拡張) + 新規分裂の抑制** | Stage3 | **+0.003** | **+0.007** | 低閾値ノード(`p >= 0.6`)でギャップを繋ぎつつ、高確信度解にない偽の分裂や弱い分裂を抑制。 |
-| **⑦ 運動保存付き局所直線スムージング + 1f欠損補間** | Stage5 | **+0.004** | **+0.005** | フレーム全体のドリフトを保護した上で前後 `±4` フレームの直線フィット(`w=0.825`, 上限 `4.5µm`)を適用し、さらに座標を小数第3位のFloatで出力。 |
-| **⑧ トラック修復 (ILP4 `close_gaps`: 2〜10フレームギャップ結合)** | Stage4 | **+0.001** | **+0.002** | 長さ8以上の堅牢なトラック端点を対象に、速度整合性と未採用検出点へのスナップを用いて数フレームの途切れをMILPで結合。 |
+| 提出 | 検証(adj. J) | 公開テスト4動画 | Public LB | Private LB |
+|---|---:|---:|---:|---:|
+| `fin`(選択) | 0.940 | 0.928 | 0.961 | **0.953** |
+| `best` | 0.939 | 0.933 | 0.958 | 0.955 |
 
-### 2. 「CVとLBの不一致」の正体と、採用を見送った手法から得られる教訓
+### 2. スコア向上の主要要素 (What mattered)
 
-| 観察・試したアイデア | 結果・影響 | なぜそうなったのか(教訓) |
+| 追加・改良した手法 | 対応Stage | 効果 | 技術的ポイント |
+| :--- | :---: | :---: | :--- |
+| **① TTA 1 → 4ビュー(単一モデル)** | Stage1 | **+0.05**(スコア) | 横方向の90°回転のみ。記述子もビュー平均特徴から取るのでリンクにも効く |
+| **② ドリフト補正リンク距離** | Stage4 | **+0.009**(検証) | 確信リンク($P \ge 0.7$)の変位中央値をステージシフトとして除去 |
+| **③ 最初の Teacher → Student** | 学習 | **+0.008**(検証) | GTのみモデルに対して。ILPトポロジー+生座標の擬似ラベル |
+| **④ メンバー専用エッジ再スコアラー** | Stage3 | **+0.004〜+0.007**/モデル | 23特徴のLightGBM、nullの確率は維持 |
+| **⑤ ドリフト補償平滑化(素の平滑化比)** | Stage5 | **+0.005** | 累積ドリフトを引いてから直線フィットし、戻す |
+| **⑥ 低コントラストhaze拡張** | 学習 | **+0.005**(検証) | 17µm箱フィルタとのブレンドで深部のもやを模倣 |
+| **⑦ 異なる分割・アーキテクチャのアンサンブル** | Stage1〜3 | **Public 0.954 → 0.959**(1 → 3モデル) | 各モデルが独自のランダム動画分割 |
+| **⑧ T4でbf16エミュレーションでなくfp16** | Stage0 | **3.5倍高速** | Encoder Cache(1.4〜1.9倍)、2GPUシャーディング、Deadline Guardと合わせて12時間に収める |
+
+```mermaid
+xychart-beta
+    title "アンサンブルの成長と Public LB"
+    x-axis ["単一モデル", "v10教師 (3モデル)", "v11教師 (3モデル)", "fin (6モデル)"]
+    y-axis "Public LB" 0.950 --> 0.965
+    bar [0.954, 0.958, 0.959, 0.961]
+```
+
+### 3. 効かなかったこと (What did not work)
+
+| 試したアイデア | 結果 | 教訓 |
 | :--- | :---: | :--- |
-| **訓練データの「重複フレーム」と「14µm巨大ドリフト」の発見** | **CV設計の鍵** | 訓練データには「次フレームとバイト単位で完全同一の重複フレーム(`DUPLICATE_FRAMES`)」と「1フレームで画像全体が6〜14µm以上ジャンプするドリフトフレーム(`DRIFT_FRAMES`)」が含まれていた。CV評価時にこれらを予測・GTの双方から除外したことで、ノイズに振り回されない信頼できるローカル検証環境が完成した。 |
-| **推論時のフレーム間ドリフト補正 (`drift_compensate`)** | **fold0 CV +0.0060 だが<br>Public LB 変化なし** | 検出点群の相互最近傍グリッドサーチで全体シフトを推定・補正する精緻な処理(`local_flow`, `frame_drift_um`)を実装しCVでは大きく改善したが、LBプローブの結果 **「隠されたテストデータには6µm以上のドリフトフレームが1つも存在しない」** ことが判明。これがコンペ全体で多くの参加者がCVとLBの乖離に悩まされた大きな原因だった。 |
-| **重複フレーム除外 + ドリフト補正済みデータでのモデル学習** | **Public LB 低下 /<br>Private LB +0.011** | 訓練データから重複フレームを除きドリフトを補正して学習すると、同一fold-0モデルのPrivateスコアは **+0.011** 跳ね上がったが、Public LBが下がったため最終提出には採用しなかった(もし採用していればPrivate 0.969相当で3位〜4位争いに食い込むポテンシャルがあった)。 |
-| **原画像からの輝度重心ブレンド (`refine_centroid`)** | **無効化でGPU推論10%高速化** | 放物線サブボクセル補正(`refine_peaks_parabolic`)と運動保存直線スムージング(`smooth_track_coords`)がすでに十分高精度だったため、フル解像度Zarrを毎フレーム読み直して重心をブレンドする処理は不要となり、OFFにすることで精度を維持したまま推論時間を約10%短縮できた。 |
+| **検証損失でモデルを順位付け** | 損失も細胞Recallも良いモデルが0.878、見劣りするモデルが0.885 | **全モデルをEnd-to-Endのスコアで順位付けする** |
+| **Mean Teacherの一貫性学習**(EMA教師・同一ビュー) | −0.001 | オフラインの擬似ラベルで十分 |
+| **2モデルの重みスープ** | −0.005(検証, CI [−0.009, −0.001]) | 別分割・別系譜のモデルは重み平均ではなく出力平均で |
+| **MultiScaleモデルの細胞をアンサンブルに入れる** | 0.939 vs 0.942(検証) | MultiScaleは細胞を出しすぎる → リンクの意見だけ使う |
+| **全メンバーの上に1つの再スコアラーを積む** | 全提出でメンバーごとより悪い(0.958 vs 0.959 Public) | 再スコアラーもメンバー専用に |
+| **ソルバー側のIdentity Swap対策**(Z割引距離、平滑化トラックの再リンク) | +0.0001 | **ソルバーはリンカーに従う。Swapはネットワークで直すしかない** |
+| **リンクヘッドの較正**(温度0.5〜2.0、ノード・分裂スケーリング) | 効果なし | 親Softmaxはすでに較正済み(ECE 0.002) |
+| **細胞閾値を下げて見逃しを回収** | 生のリンクJaccardが単調に低下 | 増えた細胞は偽物(5位解法とは逆の結論なのが面白い) |
+| **確率による候補リンクの枝刈り** | どのカットでも悪化(0.48カットで 0.900 → 0.867) | Softmaxにnullがあるので枝刈り不要 |
+| **DoG検出器による細胞の拒否権** | +0.0005(CIが0をまたぐ) | DoGのRecall(2.5µm)は0.64、ネットワークは0.86 |
+| **Public スコアで最終提出を選ぶ** | 最高Public 0.96285 → **Private 0.94824** | 選択した提出は Public 0.96185 → **Private 0.95398**。Publicを追いかけない |
+
+> [!WARNING]
+> 最後の行が象徴的です。**Publicで一番良かった提出(0.96285)は、Privateでは0.948まで落ちていました**。ローカル検証(モデルAの30動画 + ブートストラップ)を信じて選んだ提出が、Private 0.954で6位に残りました。Public LBが公開テスト4動画分しかないコンペでは、ローカル検証の設計がそのまま順位を決めることがよくわかります。
 
 ---
 
-## 1位・2位・3位・4位・5位解法の比較
+## 1位・2位・3位・4位・5位・6位解法の比較
 
-本コンペの金メダル上位5解法(1位〜5位)のまとめ！5つのアプローチを並べて比較します。
+本コンペの金メダル上位6解法(1位〜6位)のまとめ！6つのアプローチを並べて比較します。
 
-| 項目 | 1位解法(sersasj) | 2位解法(soheilayati) | 3位解法(yu4u / ren4yu) | 4位解法(BarryZhou / songqizhou) | 5位解法(Tang / hirotetsu) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Public / Private LB** | **0.976 / 0.977** | **0.974 / 0.970** | **0.978 / 0.969** | **0.969 / 0.962** | **0.971 / 0.958** |
-| **基本設計思想** | **ビジュアルトラッキング**<br>細胞の見た目変化・FPN占有マップから直接追跡 | **幾何ヒューリスティクス & 特徴量工学**<br>距離・速度・カルマンフィルタベース | **物理フロー補正 + 数理計画法(LP)**<br>3D Dense Flow + 4段分裂判定 + 整数計画法 | **生物学的観察のモデリング + 個別コストILP**<br>軽量NN + CPU GBDT + ノード別分裂コストILP | **コンペ主催者の公開コードの補足改善 (Single-Backbone E2E)**<br>共有3D U-Net + 4出力Transformer + 多段ILP |
-| **検出器 (Detector)** | 3D U-Net (MAE事前学習 + 3Dベクトルフロー予測) | 3D U-Net (5-foldアンサンブル + 多段コンセンサス) | 2.5D U-Net (EffNetV2-L, B7) + 3D SegResNet (15モデルTRT) | Dual-Encoder 3D Net (現在+前後差分) + Cellpose移流 + PL合意洗練 & DoGルーター | **TemporalUNet3D (11モデル×8方向TTA)** + 3D AvgPool縮小 + **対数放物線サブボクセル補正** |
-| **リンク・特徴量抽出** | 視覚特徴からの直接リンク予測 | 幾何距離・カルマンフィルタ速度・近傍特徴 | FlowNet3D変位補正 + 2.5D Siamese EmbedUnet (5-fold) | 幾何・組織フロー残差(26特徴) + Edge Transformer + InfoNCE CNN → LightGBM(47特徴) | **U-Netマルチスケール特徴(Trilinear補間) + NodeTransformerV2 (Self+Cross Attn) + 16D Identity** |
-| **分裂(Division)の解法** | **Soon Net**<br>分裂前後3クラス分類 + 娘細胞占有マップ | **ペア特徴量 + 分裂スタッキング**<br>距離・形状特徴からGBDT/ペアモデル | **4系統の専門モデル (div3f)**<br>parent / pre / post / native-parent (計40 TRT) | **3段階ハイブリッド ($s_i = \max(\text{pair}, \text{cat})$)**<br>5f CNN + 53特徴CatBoost + 261特徴ペアモデル | **リンカー内蔵の `division_head` (`pos_weight=20`)**<br>別モデルを作らず、NodeTransformer内で新規出現・分裂を同時予測 |
-| **グラフ構築・追跡** | **貪欲法 (Greedy Decode)**<br>対数オッズ比による逐次決定 | **多段制約ソルバー**<br>Stage6リランキング + フォーク投票 | **整数計画法 (Lineage LP / HiGHS)**<br>2段階確率分解($a \times q$) + 反復線形化MILP | **`tracksdata` + `SCIP` 大域的ILP**<br>ノード別分裂コスト($\text{base} - 16s_i$) + 第2娘救済 | **多段ILP (`HighsILPSolver`: ILP1〜ILP4)**<br>検出確信度ノードコスト `-8(q-0.96)` + 足場リンク再結合(`relink_ilp`) |
-| **後処理の工夫** | 線形平滑化 + ギャップ補完 + 短トラック除去 | 動的閾値 + カルマン速度ゲーティング | オプティカルフローに基づくアフィン座標微調整 + 3fギャップ補完 | 原画像9f DoGトレース分岐検証(Fork Verifier) + 動き補償直線平滑化 + 疎動画ゲート | **2〜10f空き検出スナップ結合(ILP4)** + **運動保存直線平滑化(±4f)** + 1f補間 + **Float CSV出力** |
-| **計算資源・高速化** | PyTorchモデルの軽量化 | Python/NumPyの並列化 | TensorRTへの全エンジン化 + エンコーダ特徴量再利用 | 小規模モデル設計(10ep学習) + Zarrチャンクの `blosc2` 直接解凍 + CPU/GPU非同期並列 | **LP緩和+100-hop局所厳密MILP** + OOM自動チャンク縮小 + 最長動画優先GPU/CPU非同期キュー |
+| 項目 | 1位解法(sersasj) | 2位解法(soheilayati) | 3位解法(yu4u / ren4yu) | 4位解法(BarryZhou / songqizhou) | 5位解法(Tang / hirotetsu) | 6位解法(Jamal Saeedi) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Public / Private LB** | **0.976 / 0.977** | **0.974 / 0.970** | **0.978 / 0.969** | **0.969 / 0.962** | **0.971 / 0.958** | **0.961 / 0.953** |
+| **基本設計思想** | **ビジュアルトラッキング**<br>細胞の見た目変化・FPN占有マップから直接追跡 | **幾何ヒューリスティクス & 特徴量工学**<br>距離・速度・カルマンフィルタベース | **物理フロー補正 + 数理計画法(LP)**<br>3D Dense Flow + 4段分裂判定 + 整数計画法 | **生物学的観察のモデリング + 個別コストILP**<br>軽量NN + CPU GBDT + ノード別分裂コストILP | **コンペ主催者の公開コードの補足改善 (Single-Backbone E2E)**<br>共有3D U-Net + 4出力Transformer + 多段ILP | **検出+リンク一体型Net + 自己学習**<br>パイプライン全体を教師にしたTeacher → Student + 単発Event ILP |
+| **検出器 (Detector)** | 3D U-Net (MAE事前学習 + 3Dベクトルフロー予測) | 3D U-Net (5-foldアンサンブル + 多段コンセンサス) | 2.5D U-Net (EffNetV2-L, B7) + 3D SegResNet (15モデルTRT) | Dual-Encoder 3D Net (現在+前後差分) + Cellpose移流 + PL合意洗練 & DoGルーター | TemporalUNet3D (11モデル×8方向TTA) + 3D AvgPool縮小 + 対数放物線サブボクセル補正 | **ネイティブ解像度3フレーム入力・変位予測付き時間融合**(6モデル×2〜4ビュー) + **3状態ターゲット + Count Prior** |
+| **リンク・特徴量抽出** | 視覚特徴からの直接リンク予測 | 幾何距離・カルマンフィルタ速度・近傍特徴 | FlowNet3D変位補正 + 2.5D Siamese EmbedUnet (5-fold) | 幾何・組織フロー残差(26特徴) + Edge Transformer + InfoNCE CNN → LightGBM(47特徴) | U-Netマルチスケール特徴(Trilinear補間) + NodeTransformerV2 (Self+Cross Attn) + 16D Identity | **k-NN候補上のSparse双方向グラフAttention** + 速度・不確実性 + **新規細胞クラス** → **メンバー専用LightGBM(23特徴)** |
+| **分裂(Division)の解法** | **Soon Net**<br>分裂前後3クラス分類 + 娘細胞占有マップ | **ペア特徴量 + 分裂スタッキング**<br>距離・形状特徴からGBDT/ペアモデル | **4系統の専門モデル (div3f)**<br>parent / pre / post / native-parent (計40 TRT) | **3段階ハイブリッド ($s_i = \max(\text{pair}, \text{cat})$)**<br>5f CNN + 53特徴CatBoost + 261特徴ペアモデル | **リンカー内蔵の `division_head` (`pos_weight=20`)** | **関連付けヘッド内蔵の分裂ロジット(`pos_weight=20`)** + 娘ペアヘッド(学習専用) → ILPで $\max(0, -\ell^{div})$ |
+| **グラフ構築・追跡** | **貪欲法 (Greedy Decode)**<br>対数オッズ比による逐次決定 | **多段制約ソルバー**<br>Stage6リランキング + フォーク投票 | **整数計画法 (Lineage LP / HiGHS)**<br>2段階確率分解($a \times q$) + 反復線形化MILP | **`tracksdata` + `SCIP` 大域的ILP**<br>ノード別分裂コスト($\text{base} - 16s_i$) + 第2娘救済 | **多段ILP (`HighsILPSolver`: ILP1〜ILP4)**<br>検出確信度ノードコスト `-8(q-0.96)` + 足場リンク再結合 | **単発Event ILP (`tracksdata`)**<br>ノード $-\text{logit}$ / 出現 $-\log P(\text{null})$ / ドリフト補正距離、LP-first(3-hop) → SCIP → 貪欲法 |
+| **後処理の工夫** | 線形平滑化 + ギャップ補完 + 短トラック除去 | 動的閾値 + カルマン速度ゲーティング | オプティカルフローに基づくアフィン座標微調整 + 3fギャップ補完 | 原画像9f DoGトレース分岐検証(Fork Verifier) + 動き補償直線平滑化 + 疎動画ゲート | 2〜10f空き検出スナップ結合(ILP4) + 運動保存直線平滑化(±4f) + 1f補間 + Float CSV出力 | **修復ヒューリスティック無し**(構造制約の最小修復のみ) + **ドリフト補償直線平滑化(±2f)** |
+| **計算資源・高速化** | PyTorchモデルの軽量化 | Python/NumPyの並列化 | TensorRTへの全エンジン化 + エンコーダ特徴量再利用 | 小規模モデル設計(10ep学習) + Zarrチャンクの `blosc2` 直接解凍 + CPU/GPU非同期並列 | LP緩和+100-hop局所厳密MILP + OOM自動チャンク縮小 + 最長動画優先GPU/CPU非同期キュー | **2.5〜5.7Mの小型モデル** + fp16 + Encoder Cache + GPUごとワーカー&ファイルキュー + **Deadline Guard** + 多段フォールバック |
 
 ---
 
-### 同じ「材料集め → ジャッジ → 後始末」の中での1位〜5位の違い
+### 同じ「材料集め → ジャッジ → 後始末」の中での1位〜6位の違い
 
 | 順位 | ① 材料集め (点・線・分裂) | ② ジャッジ (繋ぎ方の決定) | ③ 後始末 (手直し・検品) | 一言でいうと |
 | :---: | :--- | :--- | :--- | :--- |
@@ -678,31 +901,36 @@ sequenceDiagram
 | **3位** | **超・重厚なNN大軍団**<br>15個の検出TRT + FlowNet3D + Siamese Net + 40個の分裂TRT | **数理計画法 (Lineage LP/MILP)**<br>動画全体を `HiGHS` ソルバーで大域的に一括ジャッジ | Optical Flowによる座標微調整 + 3fギャップ補間 | **「最強のGPU特徴量 × 数理計画法(LP)の王道フル装備」** 型 |
 | **4位** | **軽量NN + 生物学的GBDT**<br>18M 3D Net + 261特徴量の母娘ペアLGB/CatBoost | **数理計画法 (個別コストILP)**<br>`tracksdata` + `SCIP` でノード別コスト($6-16s_i$)一括ジャッジ | 原画像9f再追跡(Fork Verifier) + 動き補償平滑化 + 疎動画ゲート | **「GPU資源の差を、生物学特徴量とILP設計・原画像再検品で埋めた」** 型 |
 | **5位** | **単一バックボーン11モデル×8TTA**<br>1つの3D U-Net + 4出力Transformerで検出・リンク・外見・出現・分裂を全出力 | **多段ILP (ILP1〜ILP3)**<br>ノード確信度コスト付きILP + 足場リンク(`scaffold`)を用いた再結合 | **ILP4(2〜10fスナップ結合)** + 運動保存直線平滑化 + **Float出力** | **「公式ベースラインの単一モデル構造を、正攻法で極限まで磨き上げた」** 型 |
+| **6位** | **小型の検出+リンク一体型Net×6 + 専用LightGBM**<br>材料そのものを **自分のパイプラインの出力(擬似ラベル)で何周も鍛え直す** | **単発Event ILP**<br>較正済みの確率(新規細胞クラス込み)をそのままコストにして1回で解く | **修復なし**、ドリフト補償平滑化のみ | **「ラベルが3%なら、残り97%は自分で作る。確率を較正すればILPは1回でいい」** 型 |
 
-### 比較すると見えてくる5位解法のユニークな立ち位置
+### 比較すると見えてくる6位解法のユニークな立ち位置
 
-* **1位〜4位が「分裂専用モデル」や「GBDT特徴量統合器」を別建てしたのに対し、5位は「1つのニューラルネット(`MyUnet`)」に全てを集約している**:
-  3位は40個の分裂専用TensorRTエンジン、4位は6個の分裂3D CNN + 53特徴CatBoost + 261特徴ペアGBDTを構築しましたが、5位解法は **「共有3D U-Netの特徴ピラミッドから、NodeTransformer 1つでリンク・外見ベクトル・新規出現・細胞分裂の4つをすべて同時に予測させる」** という非常にクリーンなEnd-to-End設計を貫いています。
-* **そのシンプルさを支えたのが「ZebraHub事前学習」と「多段ILP(ILP1〜ILP4)」**:
-  モデル構造が単一でシンプルであるぶん、①公開ZebraHubデータセットでの事前学習(+0.016)、②検出確信度をそのままILPのノードコストにする設計(+0.020)、③弱いリンクを一時的な「足場(`scaffold`)」として使って繋ぎ直した後に足場を外すILP3(`relink_ilp`)、④未採用の検出点へスナップさせながら2〜10フレームの途切れを繋ぐILP4(`close_gaps`)という、**ニューラルネットの出力と数理計画法(ILP)の結合部分の緻密さ**で金メダル圏内(Public 0.971 / 5位)へと到達しています。
+* **「疎ラベル問題」への正面突破**:
+  5位解法がZebraHubという **外部の密ラベルデータ** に気づいて事前学習したのに対し、6位解法は **自分のパイプライン(アンサンブル+再スコアラー+ILP)を教師にして、訓練動画の97%の細胞に自前で密ラベルを作る** というアプローチを取りました。しかも擬似ラベルは「ネットワークのargmax」ではなく「ILPの解」から取り(0.949 vs 0.885)、座標は平滑化前の生検出、撮像コホートごとの系統的ズレまで補正する、という細やかさです。
+* **「確率の較正」に全振りした結果、ILPが単純になった**:
+  明示的な「新規細胞」クラス付きのSoftmax(ECE 0.002)をそのまま出現コストに、中心ロジットをそのまま細胞コストにすることで、**5位のような多段ILPや、4位・1位のようなギャップ補完・修復ルールを一切使わずに** 金メダル圏に到達しています。「ソルバーはリンカーに従う。Swapはネットワークで直すしかない」という割り切りが印象的です。
+* **「カメラをモデル化する」視点**:
+  ステージドリフトを、学習(合成ドリフト拡張)・再スコアラー(ドリフト補正特徴)・ソルバー(ドリフト補正距離)・平滑化(ドリフト補償)の **4か所で一貫して** 扱っています。5位解法が推論時のドリフト補正をLBで効かずに見送ったのとは対照的です(5位は「テストには6µm超の巨大ドリフトが無い」と判断。6位は中央値1.3µmレベルの小さなドリフトも距離計算から除いている、という違いでしょう)。
+* **Kaggle環境での「時間の設計」**:
+  T4×2・12時間という制約の中で、fp16選択、Encoder Cache、ファイルキューによる2GPU分散、Deadline Guard、5段階のフォールバックまで作り込み、**「どの動画も必ず何らかの予測を出す」** ことを保証しています。隠しテストは約10時間で完走したそうです。
 
 ---
 
 ## まとめ
 
-Biohubコンペの5位解法は、多くの参加者が一度は触れたはずの **「コンペ主催者の公開コード(`unet-baseline-inference-submission`)」を出発点としながら、データの問題点・前処理の歪み・リンカーの表現力・ILPの目的関数・最終出力の丸め誤差に至るまで、パイプラインのあらゆるボトルネックを科学的に特定して潰し切ることでソロ金メダル(5位)を獲得した、最もお手本にしやすい王道ソリューション** でした。
+Biohubコンペの6位解法は、**「アノテーションが細胞の3%しかない」という本コンペ最大の難所に対して、検出とリンクを1つの小型ネットワークにまとめ、その確率をそのまま大域的ILPに渡し、さらにパイプライン全体を教師にして次のモデルを鍛える(Detect, Link, Solve, Repeat)ことで、ソロ金メダル(6位)を獲得した、学習設計の教科書のようなソリューション** でした。
 
 特に学びとして持ち帰りたい重要ポイントは以下の5点です:
 
-1. **ベースラインの「見えない情報損失」を徹底的に排除する基本動作の大切さ**:
-   - ストライド間引き(`::4`)を3D Average Poolingに置き換えてボクセル中心座標を正確に合わせ、4倍縮小グリッドのピークを対数放物線フィッティング(`refine_peaks_parabolic`)でサブボクセル補正し、最終CSVも整数丸めではなく小数第3位の `float` で出力する(Z軸の量子化による `-0.0074` の損失を防ぐ)という、一つ一つの丁寧なエンジニアリングが土台を支えていること。
-2. **訓練データの異常(重複フレーム・巨大ドリフト)の特定と、CV/LB乖離の原因解明**:
-   - 訓練動画の中に「完全同一の重複フレーム」と「14µm以上の巨大ドリフトフレーム」が存在することを突き止めてCV評価から除外し、さらにLBプローブによって「テストデータには巨大ドリフトが無い」と見抜いたことで、無駄な過適合を防いだこと。
-3. **Transformerリンカーのマルチタスク4出力化(`Link / Identity / Appearance / Division`)とマルチスケール特徴**:
-   - 既存のU-Netバックボーンの特徴ピラミッドから `F.grid_sample` でマルチスケール特徴を引き出し、フレーム内Self-Attention + フレーム間Cross-Attentionを通すだけで、別モデルを追加することなく分裂(`pos_weight=20`)・新規出現(`pos_weight=10`)・16次元外見埋め込みを高精度に同時学習できたこと(**+0.020 / +0.024**)。
-4. **「検出確信度ノードコスト」と「多段ILP(ILP1〜ILP4)」によるRecallとPrecisionの両立**:
-   - 検出閾値を `0.60` に下げて候補を広く拾いつつ、ILP内で `-8.0 * (q - 0.96)` のノード確信度コストを課すことで「ギャップを埋める時だけ低確信度ノードを採用する」挙動を実現したこと(**Private +0.020**)。さらにノード・分岐固定での足場リンク付き再結合(ILP3)や空き検出スナップ付きギャップ結合(ILP4)など、ILPを多段階に使い分ける設計が極めて有効であったこと。
-5. **HiGHS LP緩和 + 100-hop局所厳密MILP(`HighsILPSolver`)による高速かつ厳密な求解**:
-   - トラッキングILPのLP緩和がほぼ整数解になる性質を活かし、端数が出た変数の100ホップ近傍だけを厳密MILP(`mip_rel_gap=0.0`)で解き直すことで、商用ソルバー(Gurobi)を使わずともオープンソースのSciPy/HiGHSだけで高速・厳密な大域的最適化を実現したこと。
+1. **疎ラベルでは「分からない所は教えない」+「全体量だけ教える」**:
+   - 正例・検証済み背景・未知の3状態ターゲットで、未アノテーション細胞を背景として誤学習させない。その代わりにCount Prior(推定細胞数への引き寄せ)で未知領域の過検出を抑える。シンプルですが、疎ラベル検出全般に使える考え方です。
+2. **教師は「モデル」ではなく「パイプライン」**:
+   - 擬似ラベルのトポロジーはILPの解から、座標は平滑化前の生検出から、確率は損失重みに、GTは常に優先。最初の1周で +0.008。その後はアーキテクチャと分割を変え、アンサンブル教師で上積みしていく、という Noisy Student の実戦的な回し方が学べます。
+3. **ソルバーが使える「較正された確率」を出す**:
+   - 親候補Softmaxに「新規細胞」クラスを加え、学習時に親の15%を意図的に消して教える。これだけで出現コストが自然に決まり、ILPは1回で済み、修復ルールが不要になる。「後処理で頑張るより、ネットワークの出力の意味を揃える」という設計思想です。
+4. **Identity Swapには「別の視点」を足す**:
+   - 関連付けヘッドが見ていない「親側の競合」「局所密度」「ドリフト補正後の動き」を23特徴にしたメンバー専用LightGBMで再ランク(+0.004〜0.007/モデル)。nullの確率は触らないので、ILPのコスト体系を壊さない。
+5. **ローカル検証を信じ、時間を設計する**:
+   - Publicで最良の提出(0.96285)はPrivate 0.948まで落ち、ローカル検証で選んだ提出がPrivate 0.954で残った。また、fp16・Encoder Cache・2GPU分散・Deadline Guard・多段フォールバックで、6モデル×TTAを12時間に確実に収めたこと。
 
 お役に立てれば。
