@@ -271,16 +271,15 @@ flowchart TD
 
 1. **環境セットアップと設定(`biohub-cell-tracking-inference.py` L30-L145)**:
    - Kaggle上ではコードデータセット内のwheel(`biohub_tracking-*.whl`)を `pip install --no-index` し、ローカルでは `biohub_cell_tracking_kaggle/src` を `sys.path` に追加します(`setup_environment()`, L30-L72)。
-   - `shipped_config(variant)` (`recipe.py` L135-L151) が `IsotropicConfig()` のデフォルト値(=提出レシピ)に、選んだバリアントの6チェックポイントと6再スコアラーを取り付けて返します。
+   - `shipped_config(variant)` (`recipe.py` L135-L151) が `IsotropicConfig()` のデフォルト値に、選んだバリアントの6チェックポイントと6再スコアラーを取り付けて返します。
    - CUDA初期化前に `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を設定し、8〜16GB GPUでの断片化OOMを防いでいます(L19)。
 2. **GPUごとに1ワーカー + ファイルシステムの共有キュー (`shard.py` L38-L65, L165-L264)**:
    - 各ワーカーは別プロセス(ノートブックのセルは `spawn` できないため `subprocess.Popen`)で起動され、設定はJSONで受け取ります。
    - キューは `<順位>__<動画名>.pending` という空ファイルの集まりで、ワーカーは `os.rename(... .pending → .claimed)` で1本ずつ動画を取ります。**`os.rename` はアトミック** なので、競合に負けた側は `OSError` になって次を探すだけ。速いGPUが自然に多くの動画を処理します。
-   - 動画は `frames × Z × Y × X` の大きい順に並べられ(`movie_weight()`)、重い動画から先に処理されます。
 3. **Deadline Guard (`shard.py` L68-L131)**:
-   - 動画を処理するたびに、直近5本の「デコード時間」と「それ以外の時間」の中央値から1本あたりの所要時間を推定し、`(全ビュー, 75%, 50%, 1ビュー)` のラダーから **締切に間に合う最も豪華な設定** を選び直します(`guard_pick()`, L101-L119)。
+   - 動画処理を開始時に直近の処理実績から所要時間を予測し、締切に間に合う適切な動画を選び直します(`guard_pick()`, L101-L119)。
    - デコードコストは「モデル数 + TTAビュー数の合計」に比例するとモデル化(`guard_cost_ratio()`, L94-L98)。安全係数は1.05。
-   - 後処理・CSV書き出し・失敗動画の再実行用に、最低30分(動画数に応じて増加)を確保します(`post_reserve_seconds()`, L124-L131)。
+   - 後処理・CSV書き出し・失敗動画の再実行用に、最低30分(動画数に応じて増加)を確保しています(`post_reserve_seconds()`, L124-L131)。
 4. **「全動画に必ず予測を出す」多段フォールバック (`shard.py` L267-L293, `pipeline.py` L198-L223)**:
    - 失敗した動画は次に安い設定で再試行 → 1ビュー(`degraded_config`) → primaryモデル単体(`primary_only_config`) → **モデル無しトラッカー**(DoG検出+ドリフト補正最近傍リンク, `fallback.py`) → 最後はプレースホルダ1ノード、と段階的に落とします。
 5. **ILPの時間予算 (`predict.py` L651-L656)**: 各動画のILPには `0.3 × 残りセッション時間 / 残り動画数`(最低30秒)のタイムアウトが割り当てられます。
