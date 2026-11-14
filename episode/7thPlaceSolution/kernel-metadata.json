@@ -1,0 +1,33 @@
+{
+  "id": "tatsutaka/biohub-7th-place-inference",
+  "id_no": 137567778,
+  "title": "biohub-7th-place-inference",
+  "code_file": "biohub-7th-place-inference.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [
+    "gpu"
+  ],
+  "dataset_sources": [
+    "tatsutaka/biohub-choice957-offline-deps-20260911",
+    "tatsutaka/biohub-division-runtime-20260908-v001",
+    "tatsutaka/biohub-ensemble8x2-trt-t4-engines-0926",
+    "tatsutaka/biohub-m4000-division-trt-t4-engines-0923",
+    "tatsutaka/biohub-motion-nnunet-ilp-artifacts-1500-v001",
+    "tatsutaka/biohub-motion-postprocess-v001",
+    "tatsutaka/biohub-trt1016-offline-0923",
+    "tatsutaka/biohub-division-swa-image5-assets-0926",
+    "tatsutaka/biohub-synthetic-native1500-0921"
+  ],
+  "kernel_sources": [],
+  "competition_sources": [
+    "biohub-cell-tracking-during-development"
+  ],
+  "model_sources": [],
+  "docker_image": "gcr.io/kaggle-private-byod/python@sha256:37c64f7dd9c54116ecd1bcc88817c5469b88387388fade02bfa8bf3fc647d461",
+  "machine_shape": "NvidiaTeslaT4"
+}

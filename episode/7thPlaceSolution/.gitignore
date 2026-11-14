@@ -1,0 +1,6 @@
+.venv/
+working/
+datasets/
+__pycache__/
+*.pyc
+*.log

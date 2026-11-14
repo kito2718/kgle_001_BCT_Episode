@@ -1,0 +1,25 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/datasets/biohub-motion-nnunet-ilp-artifacts-1500-v001/runtime/nnUNet",
+    "${workspaceFolder}/datasets/biohub-motion-nnunet-ilp-artifacts-1500-v001/runtime/vendor",
+    "${workspaceFolder}/datasets/biohub-motion-nnunet-ilp-artifacts-1500-v001/runtime/tools",
+    "${workspaceFolder}/datasets/biohub-division-runtime-20260908-v001/runtime",
+    "${workspaceFolder}/datasets/biohub-division-runtime-20260908-v001/runtime/legacy",
+    "${workspaceFolder}/working/m4000_pretrain_two_model_full_paired_v001_0923/portable_division/runtime"
+  ],
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}",
+    "${workspaceFolder}/datasets/biohub-motion-nnunet-ilp-artifacts-1500-v001/runtime/nnUNet",
+    "${workspaceFolder}/datasets/biohub-motion-nnunet-ilp-artifacts-1500-v001/runtime/vendor",
+    "${workspaceFolder}/datasets/biohub-motion-nnunet-ilp-artifacts-1500-v001/runtime/tools",
+    "${workspaceFolder}/datasets/biohub-division-runtime-20260908-v001/runtime",
+    "${workspaceFolder}/datasets/biohub-division-runtime-20260908-v001/runtime/legacy",
+    "${workspaceFolder}/working/m4000_pretrain_two_model_full_paired_v001_0923/portable_division/runtime"
+  ],
+  "files.associations": {
+    "*.zarr": "json"
+  }
+}

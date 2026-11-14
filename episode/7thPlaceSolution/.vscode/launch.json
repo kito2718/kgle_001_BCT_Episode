@@ -1,0 +1,66 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Biohub 7th Place: Main Pretrained (biohub-7th-place-inference.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/biohub-7th-place-inference.py",
+      "args": [
+        "--detector",
+        "pretrained",
+        "--det-threshold",
+        "0.3"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "subProcess": true
+    },
+    {
+      "name": "Biohub 7th Place: Scratch Detector (th=0.28, Private Best Config)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/biohub-7th-place-inference.py",
+      "args": [
+        "--detector",
+        "scratch",
+        "--det-threshold",
+        "0.28"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "subProcess": true
+    },
+    {
+      "name": "Biohub 7th Place: Fast Smoke Test (1 Movie, 10 Frames)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/biohub-7th-place-inference.py",
+      "args": [
+        "--movies",
+        "44b6_0113de3b",
+        "--max-frames",
+        "10"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "subProcess": true
+    },
+    {
+      "name": "Biohub 7th Place: Verify Local Environment (verify_local_env.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "program": "${workspaceFolder}/verify_local_env.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    }
+  ]
+}
