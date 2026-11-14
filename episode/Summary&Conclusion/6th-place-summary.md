@@ -271,18 +271,18 @@ flowchart TD
 
 1. **環境セットアップと設定(`biohub-cell-tracking-inference.py` L30-L145)**:
    - Kaggle上ではコードデータセット内のwheel(`biohub_tracking-*.whl`)を `pip install --no-index` し、ローカルでは `biohub_cell_tracking_kaggle/src` を `sys.path` に追加します(`setup_environment()`, L30-L72)。
-   - `shipped_config(variant)` (`recipe.py` L135-L151) が `IsotropicConfig()` のデフォルト値に、選んだバリアントの6チェックポイントと6再スコアラーを取り付けて返します。
+   - `shipped_config(variant)` (`recipe.py` L135-L151) が `IsotropicConfig()` で定義している設定値に従って、「6個のニューラルネット重みファイル(best.pt)」と「各モデル専用の6個のLightGBM再スコアラーファイル(.npz)」のファイルパスを設定して返します。
    - CUDA初期化前に `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を設定し、8〜16GB GPUでの断片化OOMを防いでいます(L19)。
 2. **GPUごとに1ワーカー + ファイルシステムの共有キュー (`shard.py` L38-L65, L165-L264)**:
    - 各ワーカーは別プロセス(ノートブックのセルは `spawn` できないため `subprocess.Popen`)で起動され、設定はJSONで受け取ります。
    - キューは `<順位>__<動画名>.pending` という空ファイルの集まりで、ワーカーは `os.rename(... .pending → .claimed)` で1本ずつ動画を取ります。**`os.rename` はアトミック** なので、競合に負けた側は `OSError` になって次を探すだけ。速いGPUが自然に多くの動画を処理します。
 3. **Deadline Guard (`shard.py` L68-L131)**:
    - 動画処理を開始時に直近の処理実績から所要時間を予測し、締切に間に合う適切な動画を選び直します(`guard_pick()`, L101-L119)。
-   - デコードコストは「モデル数 + TTAビュー数の合計」に比例するとモデル化(`guard_cost_ratio()`, L94-L98)。安全係数は1.05。
+   - デコード時間の算出式を自前で定義して、残り時間で収まるように、TTA回数を決定します(`guard_cost_ratio()`, L94-L98)。
    - 後処理・CSV書き出し・失敗動画の再実行用に、最低30分(動画数に応じて増加)を確保しています(`post_reserve_seconds()`, L124-L131)。
 4. **「全動画に必ず予測を出す」多段フォールバック (`shard.py` L267-L293, `pipeline.py` L198-L223)**:
-   - 失敗した動画は次に安い設定で再試行 → 1ビュー(`degraded_config`) → primaryモデル単体(`primary_only_config`) → **モデル無しトラッカー**(DoG検出+ドリフト補正最近傍リンク, `fallback.py`) → 最後はプレースホルダ1ノード、と段階的に落とします。
-5. **ILPの時間予算 (`predict.py` L651-L656)**: 各動画のILPには `0.3 × 残りセッション時間 / 残り動画数`(最低30秒)のタイムアウトが割り当てられます。
+   - 失敗した動画は次に軽い設定で再試行 → 1ビュー(`degraded_config`) → primaryモデル単体(`primary_only_config`) → **モデル無しトラッカー**(DoG検出+ドリフト補正最近傍リンク, `fallback.py`) → 最後はプレースホルダ1ノード、と段階的に落とします。
+5. **ILPの時間見積モリ (`predict.py` L651-L656)**: 各動画のILPには `0.3 × 残りセッション時間 / 残り動画数`(最低30秒)のタイムアウトが割り当てられます。
 
 #### Stage0. フローチャート
 
@@ -303,7 +303,7 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main処理} \\ &\tex
 | :--- | :--- | :---: | :--- |
 | `biohub-cell-tracking-inference.py` | `setup_environment()` | L30-L72 | Kaggleではwheelをオフラインinstall、ローカルでは `src/` を `sys.path` に追加し、`SETTINGS.json` を解決 |
 | `biohub-cell-tracking-inference.py` | `main()` | L75-L170 | 引数解析(`--variant fin/best`, `--movies`, `--num-shards`, `--session-hours`)、設定表示、`cli.run()` 実行、集計表示 |
-| `recipe.py` | `VARIANTS`, `verify_variant()`, `shipped_config()` | L49-L151 | fin/best の6チェックポイント+6再スコアラーとSHA-256、検証後に `IsotropicConfig` へ取り付け |
+| `recipe.py` | `VARIANTS`, `verify_variant()`, `shipped_config()` | L49-L151 | fin/best の6チェックポイント+各モデル専用の6個LightGBM再スコアラー、検証後に `IsotropicConfig` へ取り付け |
 | `isotropic/config.py` | `WindowConfig`, `DetectionConfig`, `CandidateConfig`, `SolverConfig`, `SmoothingConfig`, `IsotropicConfig` | L16-L156 | 閾値0.5、NMS窓(3,5,5)、TTAビュー(4,4,4,3,2,2)、k=4/20µm、ILPコスト、平滑化(w=0.8, ±2)のデフォルト値 |
 | `isotropic/kaggle.py` | `bootstrap()`, `plan_run()` | L122-L216 | 環境構築、GPU数に応じたシャード数・12時間セッション締切・autocast dtype(T4はfp16)の決定 |
 | `cli.py` | `run()`, `summarize()` | L18-L71 | 実行計画を作り `run_pipeline()` を呼ぶ。動画ごとのノード・エッジ・分裂数を集計 |
@@ -348,9 +348,9 @@ sequenceDiagram
 ### ◆Stage1. ネイティブ解像度3フレームウィンドウのデコードと共有細胞セット
 
 #### 1-1. 入力正規化とウィンドウ計画 (`volumes.py`, `decode.py`)
-* **ネイティブ解像度のまま入力 (`open_native_movie`, `volumes.py` L38-L59)**: 5位解法のような事前の縮小はせず、`(T, 64, 256, 256)` をそのまま読み込みます。ボクセル間隔が学習時の `(1.625, 0.40625, 0.40625)` と異なる動画はエラーにする安全装置付きです。
+* **ネイティブ解像度のまま入力 (`open_native_movie`, `volumes.py` L38-L59)**: 5位解法のような事前の縮小はせず、`(T, 64, 256, 256)` をそのまま読み込みます。
 * **フレームごとの正規化 (`normalize_native`, L62-L78)**: 各フレームを、そのフレームの最小値・レンジで `[0, 1]` にスケールしてから、フレーム全体の平均・標準偏差でz-scoreします。
-* **ウィンドウ計画 (`window_plan`, `decode.py` L44-L60)**: 各フレーム $t$ は **自分が中央に来る3フレームウィンドウ `[t-1, t, t+1]`** からデコードします(先頭・末尾フレームは端の完全ウィンドウを使用)。全フレームがちょうど1回ずつデコードされます。
+* **ウィンドウ計画 (`window_plan`, `decode.py` L44-L60)**: 各フレーム $t$ は **自フレームが中央に来る3フレームウィンドウ `[t-1, t, t+1]`** からデコードします(先頭・末尾フレームは端の完全ウィンドウを使用)。全フレームがちょうど1回ずつデコードされます。
 
 #### 1-2. 検出器アーキテクチャ (`isotropic_lineage.py`, `multiscale_lineage.py`)
 
@@ -365,7 +365,7 @@ sequenceDiagram
 | decoder → heads | (1,2,2) | 64×128×128 | 検出グリッド | c |
 
 1. **エンコーダ(フレームごと独立, `encode()` L414-L425)**: `Conv3d → GroupNorm → GELU` のブロック(`conv_block`, L20-L37)で、**横方向だけの縮小を2回** して1.625µmの等方グリッドへ、さらに3D縮小で3.25µmの粗いグリッドへ。**フレームを独立にエンコードする** のがミソで、推論時は各フレームを1回だけエンコードして、そのフレームを含む3つのウィンドウで使い回せます。
-2. **時間融合 (`MotionTemporalFusion`, L78-L118)**: 粗いグリッド上で、フレーム $t$ の各ボクセルが「隣接フレーム $s$ のどこを見るべきか」の **有界な変位**($2\cdot\tanh(\cdot)$ セル以内)と注意スコアを予測し、隣のフレームの特徴をその位置から `grid_sample` で取ってきて、自分自身と合わせてSoftmax重み付き和をとります。
+2. **時間融合 (`MotionTemporalFusion`, L78-L118)**: 粗いグリッド上で、フレーム $t$ の各ボクセルが「隣接フレーム $s$ のどこを見るべきか」の **有意な変位**($2\cdot\tanh(\cdot)$ セル以内)と注意スコアを予測し、隣のフレームの特徴をその位置から `grid_sample` で取ってきて、自分自身と合わせてSoftmax重み付き和をとります。
    $$\mathbf{out}_t = \mathbf{x}_t + W\left(\sum_{s \in \{t, t\pm1\}} a_{t,s}\, \mathbf{x}_s(\mathbf{p} + \mathbf{d}_{t,s})\right)$$
    動く細胞を **位置合わせしてから比較する** ための仕組みで、初期化時は変位ゼロ・一様Attentionになるようゼロ初期化されています。
 3. **デコーダとヘッド (`decode_positions()`, L427-L454)**: スキップ接続で `64×128×128` の検出グリッドまで戻し、**中心ロジット**(1ch)と **サブボクセルオフセット**($0.5\tanh(\cdot)$ で±0.5グリッドセル, 3ch)を出力します。bf16だと確率1付近の分解能が粗くなり隣接ピークが同点になるため、**2つのヘッドだけはautocastを切ってfloat32で計算** しています(L444-L449)。
