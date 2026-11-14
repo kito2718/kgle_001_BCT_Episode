@@ -97,7 +97,7 @@ https://www.kaggle.com/datasets/jamalsaeedi/biohub-cell-tracking-kaggle
 | **リンカー** | NodeTransformer(全ペア総当たり Self/Cross-Attn) | **k近傍候補グラフ上のスパース双方向グラフAttention** + 速度・不確実性予測 | 6位は候補を `k=4`・`20µm` に絞ってから採点 |
 | **リンク出力** | edge / identity / appearance / division の4出力 | **親候補Softmax + 新規細胞(null)クラス** / 分裂ロジット / 娘ペア(学習専用) / 速度 | 6位は「出現」をSoftmaxのnullとして同時に正規化 |
 | **リンク後段** | なし(ILPへ直行) | **メンバー専用LightGBM再スコアラー(23特徴)** | Identity Swap対策で +0.004〜0.007/モデル |
-| **アンサンブル** | 11モデル × 8方向TTA | **6モデル × 2〜4ビューTTA(計19ビュー)**、細胞セットは共有 | 6位はマルチスケールモデルの細胞は使わず「リンク意見」だけ使う |
+| **アンサンブル** | 11モデル × 8方向TTA | **6モデル × 2〜4ビューTTA(計19ビュー)**、細胞セットは共有 | 6位は全6モデルの中心ロジット・オフセットを平均して1つの共有細胞セットを作成 |
 | **検出閾値とノードコスト** | 閾値0.60 + ノードコスト $-8(q-0.96)$ | 閾値0.50 + ノードコスト $-\text{logit}$(損益分岐 $p=0.5$) | 6位は「閾値を下げると偽細胞が増えるだけ」と検証済み |
 | **ILP** | 多段ILP(ILP1〜ILP4) + LP緩和100-hop厳密MILP | **単発Event ILP** + LP-first(3-hop)→SCIP→貪欲法 | 6位は「全細胞・全出現に値段が付いているので修復不要」 |
 | **ドリフト** | 推論時ドリフト補正は採用見送り | **ドリフト補正距離をリンクコストに採用(+0.009)**、平滑化もドリフト補償(+0.005) | 「細胞だけでなくカメラをモデル化する」 |
@@ -305,7 +305,7 @@ $$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main処理} \\ &\tex
 | `biohub-cell-tracking-inference.py` | `setup_environment()` | L30-L72 | Kaggleではwheelをオフラインinstall、ローカルでは `src/` を `sys.path` に追加し、`SETTINGS.json` を解決 |
 | `biohub-cell-tracking-inference.py` | `main()` | L75-L170 | 引数解析(`--variant fin/best`, `--movies`, `--num-shards`, `--session-hours`)、設定表示、`cli.run()` 実行、集計表示 |
 | `recipe.py` | `VARIANTS`, `verify_variant()`, `shipped_config()` | L49-L151 | fin/best の6チェックポイント+6再スコアラーとSHA-256、検証後に `IsotropicConfig` へ取り付け |
-| `isotropic/config.py` | `DetectionConfig`, `CandidateConfig`, `SolverConfig`, `SmoothingConfig`, `IsotropicConfig` | L28-L156 | 閾値0.5、NMS窓(3,5,5)、TTAビュー(4,4,4,3,2,2)、k=4/20µm、ILPコスト、平滑化(w=0.8, ±2)のデフォルト値 |
+| `isotropic/config.py` | `WindowConfig`, `DetectionConfig`, `CandidateConfig`, `SolverConfig`, `SmoothingConfig`, `IsotropicConfig` | L16-L156 | 閾値0.5、NMS窓(3,5,5)、TTAビュー(4,4,4,3,2,2)、k=4/20µm、ILPコスト、平滑化(w=0.8, ±2)のデフォルト値 |
 | `isotropic/kaggle.py` | `bootstrap()`, `plan_run()` | L122-L216 | 環境構築、GPU数に応じたシャード数・12時間セッション締切・autocast dtype(T4はfp16)の決定 |
 | `cli.py` | `run()`, `summarize()` | L18-L71 | 実行計画を作り `run_pipeline()` を呼ぶ。動画ごとのノード・エッジ・分裂数を集計 |
 | `isotropic/shard.py` | `movie_weight()`, `_setup_queue()`, `_claim_next()` | L38-L65 | 大きい動画順のファイルキュー作成と `os.rename` によるアトミックな動画取得 |
@@ -389,7 +389,7 @@ sequenceDiagram
 4. **記述子のサンプリング (`sample_node_features`, L144-L172)**: 連続座標で、特徴マップの **中心値** と **`(3,5,5)` 局所平均** を `grid_sample` で取り出して連結(2C次元)。MultiScaleでは `LearnedDescriptorSampler` (`multiscale_lineage.py` L166-L210)が、中心から±3µm以内の **学習済みオフセット位置** の特徴をAttentionプーリングして追加(3C次元、Deformable Convと同じ発想)。各モデルは **共有細胞の位置で、自分自身の特徴マップから記述子を取る** ので、細胞は共通でもリンク意見はモデルごとに異なります。
 
 > [!NOTE]
-> Writeupの「効かなかったこと」によると、**MultiScaleモデルの細胞を共有細胞セットに入れると検証 0.939(入れないと0.942)** で、MultiScaleは細胞を出しすぎる傾向があったため「リンクの意見だけ」使ったそうです。とはいえ、コード上の提出レシピ(`shared_detection`)は全6モデルの中心ロジットを平均しているので、最終的には「細胞は6モデル平均、ただしMultiScaleの寄与はTTAビュー数で調整」という形に落ち着いているようにも読めます。
+> 実装(`shared_detection()`, `predict.py` L190-L193)により、モデルA〜Fの**全6モデルのTTA平均済み中心ロジットとオフセットを等重み(1/6ずつ)で単純平均**して共有細胞セットを抽出しています。
 
 #### Stage1. ソースコード一覧
 | ファイルパス | 関数・クラス・定数 | 行番号 | 処理内容 |
@@ -531,7 +531,7 @@ $$\log P'(\text{parent}=e) = \log\left(1 - P_{null}(j)\right) + \text{log-softma
 こうすることで、**ILPの出現コスト(=nullの確率)は再スコアラーの影響を受けません**。
 
 #### 3-3. 学習と推論の工夫 (`training/rescorer.py`, `TreeEnsemble`)
-* **学習 (`biohub-train-rescorer`)**: 各メンバーは、**アンサンブルの共有細胞上での、そのメンバー自身のスコア** で、そのメンバー自身の検証動画を使って学習します。1行は「アノテーション細胞とその親が、どちらも7µm以内でデコード細胞にマッチした」細胞の親候補1つで、真の親が正例です(`labelled_rows`, L56)。LightGBMは `objective=binary, learning_rate=0.05, num_leaves=31, 300本`(L33-L37)。検証時は動画単位5-foldのout-of-foldで適用し、リークを防いでいます。**1モデルあたり +0.004〜+0.007**(検証)。
+* **学習 (`biohub-train-rescorer`)**: 各メンバーは、**アンサンブルの共有細胞上での、そのメンバー自身のスコア** で検証動画を使って学習します(Writeup本文では「メンバー自身の検証動画」と記載されていますが、再現スクリプト `tools/reproduce_training.sh` L85-L86 では `fin`/`best` ともモデルAの検証分割 `seed=314159` の30動画で一括学習されています)。1行は「アノテーション細胞とその親が、どちらも7µm以内でデコード細胞にマッチした」細胞の親候補1つで、真の親が正例です(`labelled_rows`, L56)。LightGBMは `objective=binary, learning_rate=0.05, num_leaves=31, 300本`(L33-L37)。検証時は動画単位5-foldのout-of-foldで適用し、リークを防いでいます。**1モデルあたり +0.004〜+0.007**(検証)。
 * **推論 (`TreeEnsemble`, L118-L198 / `_numba_kernel`, L204-L233)**: LightGBMの `dump_model()` を **フラットなnumpy配列(feature, threshold, left, right, value, roots)** に変換して `.npz` で保存。推論時は **Numbaの `@njit(parallel=True)` で行ごとに木を辿る** だけなので、勾配ブースティングライブラリ不要。Numbaが無ければnumpy版(約20倍遅い)にフォールバックします。
 * **6モデル分を確率平均 (`fuse_member_rescored`, `predict.py` L442-L462)**: メンバー $k$ の再スコア済み分布 $P'_k$ と、メンバーの null 分布を、それぞれ確率空間で平均します。
   $$\bar{P}(\text{parent}=e) = \frac{1}{K}\sum_{k=1}^{K} P'_k(\text{parent}=e), \qquad K = 6$$
@@ -665,7 +665,7 @@ Z軸は1.625µmで量子化されており、位置誤差の大部分を占め�
 | `isotropic/pipeline.py` | `stage_offsets()`, `_moved()`, `smooth_positions()` | L101-L162 | 1対1リンク変位中央値の累積ドリフトを除去 → 平滑化 → 復元 |
 | `postprocess/smoothing.py` | `_line_intercept()`, `linefit_smooth_output_graph()` | L15-L87 | 前後±2フレームの単一鎖に1次最小二乗フィット、`0.2×元 + 0.8×フィット` |
 | `isotropic/pipeline.py` | `clamp_to_volume()`, `run_pipeline()` | L176-L304 | ボリューム内クランプ、空動画のフォールバック、CSV書き出しと検証、タイミング集計 |
-| `submission.py` | `write_test_submission()`, `validate_submission()` | L17-L120 | 整数丸めでのCSV出力と、フォーマット・動画網羅の検証 |
+| `submission.py` | `write_test_submission()`, `validate_submission()` | L17-L130 | 整数丸めでのCSV出力と、フォーマット・動画網羅の検証 |
 
 #### Stage5. シーケンス図
 ```mermaid
@@ -810,7 +810,7 @@ flowchart TD
 | `training/losses.py` | `LossWeights`, `center_focal_loss()`, `offset_loss()`, `parent_loss()` | L22-L142 | 損失重み(擬似ラベル0.5、分裂正例重み20)、Focal損失、オフセット、親+nullの交差エントロピー |
 | `training/losses.py` | `division_loss()`, `velocity_nll()`, `daughter_loss()`, `count_prior_loss()` | L169-L228 | 分裂BCE、速度ガウスNLL、娘ペアBCE、Count Prior |
 | `training/dataset.py` | `DataConfig`, `_node_sets()`, `_distractor_points()` | L54-L91, L357-L400, L484- | ランダムクロップ15%、ディストラクタ、親削除15%、座標ジッター |
-| `training/augment.py` | `sample_drift()`, `apply_drift()`, `degrade_contrast()` | L136-L200 | 合成ステージドリフト(≤6µm/ステップ)、低コントラストhaze |
+| `training/augment.py` | `sample_drift()`, `apply_drift()`, `degrade_contrast()` | L136-L199 | 合成ステージドリフト(≤6µm/ステップ)、低コントラストhaze |
 | `training/trainer.py` | `TrainConfig`, `association_scale()`, `Trainer` | L93-L260 | 検出のみ300ステップ → リンク損失300ステップで立ち上げ、EMA |
 | `labels.py` | `labels_from_graph()`, `cohort_offsets()`, `teacher_labels()`, `main()` | L30-L157 | 教師パイプラインによるILPトポロジー+生座標の擬似ラベル、コホート別位置合わせ |
 | `training/pseudo.py` | `merge_pseudo()` | L72-L152 | 4µmマッチング、GT優先、確率0.5未満の除外 |
@@ -861,7 +861,7 @@ xychart-beta
 | **検証損失でモデルを順位付け** | 損失も細胞Recallも良いモデルが0.878、見劣りするモデルが0.885 | **全モデルをEnd-to-Endのスコアで順位付けする** |
 | **Mean Teacherの一貫性学習**(EMA教師・同一ビュー) | −0.001 | オフラインの擬似ラベルで十分 |
 | **2モデルの重みスープ** | −0.005(検証, CI [−0.009, −0.001]) | 別分割・別系譜のモデルは重み平均ではなく出力平均で |
-| **MultiScaleモデルの細胞をアンサンブルに入れる** | 0.939 vs 0.942(検証) | MultiScaleは細胞を出しすぎる → リンクの意見だけ使う |
+| **MultiScaleモデルの細胞をアンサンブルに入れる** | 0.939 vs 0.942(検証) | MultiScaleは細胞を出しすぎる → リンクの意見だけ使う(※Writeup §10の実験記載。最終提出コード `shared_detection` では6モデル全て平均) |
 | **全メンバーの上に1つの再スコアラーを積む** | 全提出でメンバーごとより悪い(0.958 vs 0.959 Public) | 再スコアラーもメンバー専用に |
 | **ソルバー側のIdentity Swap対策**(Z割引距離、平滑化トラックの再リンク) | +0.0001 | **ソルバーはリンカーに従う。Swapはネットワークで直すしかない** |
 | **リンクヘッドの較正**(温度0.5〜2.0、ノード・分裂スケーリング) | 効果なし | 親Softmaxはすでに較正済み(ECE 0.002) |
