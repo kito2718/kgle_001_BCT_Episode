@@ -215,21 +215,24 @@ flowchart TD
 
 #### Stage0. フローチャート
 
-$$\begin{gathered} \boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初期化 \& 並列処理起動} \\ &\text{\small \texttt{biohub-4th-place-solution.py(L58-L189)}} \end{aligned} } \\
+$$
+\begin{gathered}
+\boxed{ \begin{aligned} &\textbf{Stage0. Main} \\ &\text{初期化 \& 並列処理起動} \\ &\text{\small \texttt{biohub-4th-place-solution.py(L58-L189)}} \end{aligned} } \\
 \downarrow \\
 \boxed{ \begin{aligned} &\textbf{Stage1. DoG密度ルーティング \& 3D Net移流検出 + 疑似ラベル合意洗練} \\ &\text{\small ・呼び元: \texttt{biohub-4th-place-solution.py(L191-L211)}} \\ &\text{\small ・CPU非同期: \texttt{dog\_route.py(L20-L35)}, \texttt{dog\_nodes.py(L27-L53)}} \\ &\text{\small ・GPU並列: \texttt{detect.py(L245-L324)}, \texttt{net3d.py(L26-L132)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage2. 候補リンク抽出 \& 幾何・Transformer・対照学習埋め込みのLightGBM統合} \\ &\text{\small ・呼び元: \texttt{biohub-4th-place-solution.py(L217-L218)} $\rightarrow$ \texttt{downstream.py(L35-L42)}} \\ &\text{\small ・実行: \texttt{nodes\_table.py(L14-L34)} $\rightarrow$ \texttt{candidates.py(L13-L35)} $\rightarrow$ \texttt{edge\_features.py(L15-L74)}} \\ &\text{\small \quad $\rightarrow$ \texttt{tf\_edges.py(L18-L75)} $\rightarrow$ \texttt{cell\_embedding.py(L20-L74)} $\rightarrow$ \texttt{edge\_model.py(L15-L42)}} \end{aligned} } \\
+\boxed{ \begin{aligned} &\textbf{Stage2. 候補リンク抽出 \& 幾何・Transformer・対照学習埋め込みのLightGBM統合} \\ &\text{\small ・呼び元: \texttt{biohub-4th-place-solution.py(L217-L218)} → \texttt{downstream.py(L35-L42)}} \\ &\text{\small ・実行: \texttt{nodes\_table.py(L14-L34)} → \texttt{candidates.py(L13-L35)} → \texttt{edge\_features.py(L15-L74)}} \\ &\text{\small \quad → \texttt{tf\_edges.py(L18-L75)} → \texttt{cell\_embedding.py(L20-L74)} → \texttt{edge\_model.py(L15-L42)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage3. CNN・グラフ・母娘ペアの3段階分裂事前確率 } s_i \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L45-L69)}} \\ &\text{\small ・実行: \texttt{division\_cnn.py(L46-L103)} $\rightarrow$ \texttt{division\_cat.py(L14-L34)} $\rightarrow$ \texttt{division\_pair.py(L219-L315)}} \end{aligned} } \\
+\boxed{ \begin{aligned} &\textbf{Stage3. CNN・グラフ・母娘ペアの3段階分裂事前確率 } s_i \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L45-L69)}} \\ &\text{\small ・実行: \texttt{division\_cnn.py(L46-L103)} → \texttt{division\_cat.py(L14-L34)} → \texttt{division\_pair.py(L219-L315)}} \end{aligned} } \\
 \downarrow \\
 \boxed{ \begin{aligned} &\textbf{Stage4. ノード別分裂コスト付きILP \& 動き補償直線平滑化} \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L73-L74)}} \\ &\text{\small ・実行: \texttt{ilp\_solve.py(L27-L135)}, \texttt{common.py(L110-L157)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{Stage5. 原画像トレース分岐検証 \& ギャップ補間} \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L75-L80)}} \\ &\text{\small ・実行: \texttt{fork\_verify.py(L238-L329)} $\rightarrow$ \texttt{gapfill.py(L16-L93)}} \end{aligned} } \\
+\boxed{ \begin{aligned} &\textbf{Stage5. 原画像トレース分岐検証 \& ギャップ補間} \\ &\text{\small ・呼び出し元: \texttt{downstream.py(L75-L80)}} \\ &\text{\small ・実行: \texttt{fork\_verify.py(L238-L329)} → \texttt{gapfill.py(L16-L93)}} \end{aligned} } \\
 \downarrow \\
 \boxed{ \begin{aligned} &\textbf{Stage6. 疎動画向けトラック支持ゲート} \\ &\text{\small ・呼び出し元: \texttt{biohub-4th-place-solution.py(L225-L228)}} \\ &\text{\small ・実行: \texttt{track\_gate.py(L124-L209)}} \end{aligned} } \\
 \downarrow \\
-\boxed{ \begin{aligned} &\textbf{提出ファイル(submission.csv)生成 \& 最終検証} \\ &\text{\small \texttt{biohub-4th-place-solution.py(L230-L241)}} \end{aligned} } \end{gathered}$$
+\boxed{ \begin{aligned} &\textbf{提出ファイル(submission.csv)生成 \& 最終検証} \\ &\text{\small \texttt{biohub-4th-place-solution.py(L230-L241)}} \end{aligned} } \end{gathered}
+$$
 
 
 #### Stage0. ソースコード一覧
