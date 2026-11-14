@@ -84,23 +84,53 @@ flowchart LR
 
 ---
 
-## プロジェクト構成と6つのモデル
+## プロジェクト構成
+
+6位解法のリポジトリ(`6thPlaceSolution`)は、Kaggle提出エントリスクリプト(`biohub-cell-tracking-inference.py`)と、`pip install` 可能なパッケージ形式の公式リポジトリ(`biohub_cell_tracking_kaggle/`)、Kaggle Modelsから取得したSHA-256検証済みの重み一式(`models/`)から構成されています。推論コードだけでなく、**学習・擬似ラベル生成・再スコアラー学習まで含めた全学習系譜(レシピ)** が公開されているのが特徴です。
 
 ```text
 6thPlaceSolution/
-├── biohub-cell-tracking-inference.py     # 推論エントリスクリプト (--variant fin/best)
-├── biohub_cell_tracking_kaggle/          # 公式パッケージ (src/biohub_tracking/)
-│   ├── docs/                             # SOLUTION.md (解説原文), MODEL_SUMMARY.md
-│   ├── recipes/                          # 全14モデルの学習設定JSONとアンサンブル定義
-│   └── src/biohub_tracking/
-│       ├── models/                       # IsotropicLineageNet, MultiScaleLineageNet
-│       ├── isotropic/                    # 推論パイプライン (decode, graph, edge_rescorer, solver, lpfix, shard)
-│       ├── postprocess/smoothing.py      # ドリフト補償直線スムージング
-│       └── training/                     # 3状態ターゲット, 損失, 擬似ラベル統合, LightGBM学習
-└── models/                               # 学習済み重み (6モデル + 6再スコアラー × 2提出分)
+├── biohub-cell-tracking-inference.py           # 6位解法 推論エントリスクリプト(Kaggle/ローカル両対応, --variant fin/best)
+├── biohub-cell-tracking-inference.ipynb        # 元のKaggle推論ノートブック
+├── biohub_cell_tracking_kaggle/                # 6位解法 公式GitHubリポジトリ(パッケージ: biohub_tracking)
+│   ├── docs/                                   # SOLUTION.md(Writeup原文), MODEL_SUMMARY.md, figures/
+│   ├── recipes/
+│   │   ├── train/*.json                        # 全14学習ランのレシピ(W-link-s2 → … → GX-ms-lc-s7)
+│   │   └── ensembles/*.json                    # 教師アンサンブル(v10/v11)と提出アンサンブル(fin/best)の定義
+│   ├── src/biohub_tracking/
+│   │   ├── cli.py                              # biohub-predict: run(), summarize()
+│   │   ├── recipe.py                           # VARIANTS(fin/best の6チェックポイント+6再スコアラー, SHA-256)
+│   │   ├── settings.py / submission.py         # パス設定 / CSV書き出し・検証
+│   │   ├── labels.py                           # biohub-pseudo-labels: 教師パイプラインによる擬似ラベル生成
+│   │   ├── ensembles.py                        # アンサンブル仕様(JSON) → IsotropicConfig
+│   │   ├── models/
+│   │   │   ├── isotropic_lineage.py            # IsotropicLineageNet, MotionTemporalFusion, LineageAssociationHead
+│   │   │   └── multiscale_lineage.py           # MultiScaleLineageNet, GatedTemporalFusion, LearnedDescriptorSampler, RefiningAssociationHead
+│   │   ├── isotropic/                          # 推論エンジン
+│   │   │   ├── config.py                       # IsotropicConfig(提出レシピのデフォルト値)
+│   │   │   ├── pipeline.py                     # run_pipeline(), minimal_repair(), smooth_positions()
+│   │   │   ├── shard.py                        # マルチGPUワーカー, 共有キュー, Deadline Guard
+│   │   │   ├── predict.py                      # TTA, EncoderCache, decode_movie(), predict_movie(), 再スコア融合
+│   │   │   ├── decode.py / volumes.py          # ウィンドウ計画, NMS, 正規化
+│   │   │   ├── graph.py                        # k-NN候補リンク, associate_pair()
+│   │   │   ├── edge_rescorer.py                # 23特徴, TreeEnsemble(Numba木探索)
+│   │   │   ├── solver.py / lpfix.py            # Event ILP, ドリフト補正距離, LP-first ソルバー
+│   │   │   ├── fallback.py                     # モデル無しトラッカー(DoG検出 + 最近傍リンク)
+│   │   │   └── kaggle.py / checkpoint.py       # 環境ブートストラップ, 実行計画 / チェックポイント読込
+│   │   ├── postprocess/smoothing.py            # 直線フィット平滑化
+│   │   └── training/                           # 3状態ターゲット, 損失, データ拡張, 擬似ラベル統合, LightGBM学習
+│   └── tools/                                  # download_models.py, smoke_test.py, reproduce_training.sh 等
+├── models/
+│   ├── mres-fin-444322/1/                      # 最終選択提出(fin): 6モデル + 6再スコアラー
+│   └── mres-best-444322/1/                     # 最良検証チェックポイント(best): 6モデル + 6再スコアラー
+├── input/test/                                 # 公開テスト用 4動画(*.zarr)
+├── working/                                    # predictions/*.geff, submission.csv
+├── SETTINGS.json                               # 入出力パス設定
+├── verify_local_env.py                         # 環境・GPU・全24ファイルSHA-256・モデルロード・Numba・HiGHS検証
+└── README_LOCAL.md                             # ローカル環境構築・実行ガイド
 ```
 
-### アンサンブルを構成する6モデル
+### モデル(6つ)
 各モデルは **互いに異なるランダムな動画分割(訓練165本 / 検証30本)** で学習されており、似たミスをしないよう多様化されています。1モデルあたり **2.5M〜5.7Mパラメータ** と非常にコンパクトです。
 
 | ID | モデル名 | 種類 | 特徴幅 / リンカー層 | パラメータ数 | 学習の経緯 | TTA回数 |
@@ -162,7 +192,7 @@ flowchart TD
 
 ### ◆Stage0. マルチGPU分散・時間管理(Deadline Guard)・5段階フォールバック
 
-Kaggleの「T4 GPU×2枚・制限時間12時間」を確実に使い切り、どんなエラーが起きても絶対に提出を失敗させないための仕組みです。
+Kaggleの「T4 GPU×2枚・制限時間12時間」を守るため、エラーが起きても時間オーバーさせないための仕組みです。
 
 | 仕組み | 内容 | 該当コード |
 | :--- | :--- | :--- |
@@ -187,6 +217,7 @@ sequenceDiagram
     Main->>Main: 失敗動画があれば軽量設定 → AIなし手法で再実行
     Main->>Main: Stage5 (平滑化・CSV出力・検証)
 ```
+---
 
 ### ◆Stage1. 3D CNNによる細胞検出と特徴抽出 (`volumes.py`, `decode.py`, `predict.py`)
 
@@ -201,26 +232,26 @@ sequenceDiagram
 | **decoder → heads** | `64×128×128` | 検出グリッド | 細胞の中心確率(1ch)と微調整ズレ(3ch)を出力 |
 
 1. **各フレームを独立にエンコード (`encode()`)**:
-   最初はフレームごとに別々に処理します。こうすることで、推論時に一度計算した特徴を次のウィンドウでも**キャッシュして使い回せる**(`EncoderCache`、**1.4〜1.9倍高速化**)ようになっています。
+   最初はフレームごとに別々に処理します。こうすることで、推論時に一度計算した特徴を次のウィンドウでも**キャッシュして使い回せる**(`EncoderCache`、**1.4〜1.9倍高速化**)ように工夫しています。
 2. **時間融合 (`MotionTemporalFusion`)**:
    動く細胞を **位置合わせしてから比較する** ための仕組みです。粗いグリッド(`32×32×32`)上で、フレーム $t$ の各マスが「前後のフレーム $s$ のどこへ動いたか」の予測ズレ $\mathbf{d}_{t,s}$ と重要度 $a_{t,s}$ を予測し、移動先の特徴を取り出してブレンドします。
+   下記式で計算しています。
    $$\mathbf{out}_t = \mathbf{x}_t + W\left(\sum_{s \in \{t, t\pm1\}} a_{t,s}\, \mathbf{x}_s(\mathbf{p} + \mathbf{d}_{t,s})\right)$$
    - **※欄外補足(数学記号と用語の意味)**:
-     - $\in$ : 「〜の中に含まれる」「〜という種類のデータに属する」を表す記号(例: $s \in \{t, t\pm1\}$ はプログラムの `for s in [t-1, t, t+1]:` と同じ意味)。
-     - $\mathbb{R}^3$ (アール3 / Rの3乗) : $\mathbb{R}$ は実数(小数やマイナスを含む普通の数値、`float`)、右上の $3$ は3次元(3つ組)を表し、「$(z, y, x)$ のように小数3つが並んだ3次元ベクトルデータ」を意味する。同様に $\mathbb{R}^{2c}$ は「数値がチャネル数 $2c$ 個並んだベクトル」を意味する。
-     - 特徴量 : ある1座標(= $\mathbf{p}$)の特徴量ベクトルのこと。
-     - 特徴マップ : その特徴量が空間全体(`32×32×32`)に並んだ3次元データ全体を指す。
+     - $\in$ : 「〜の中に含まれる」を表す記号(例: $s \in \{t, t\pm1\}$ はプログラムの `for s in [t-1, t, t+1]:` と同じ意味)。
+     - $\mathbb{R}^3$ : 小数3つが並んだ3次元データ $(z, y, x)$ のこと($\mathbb{R}$ は実数=小数、`3` は3つ組)。
+     - 特徴量 : ある1マス(1座標 $\mathbf{p}$)に入っている特徴量ベクトル1個分のこと。
+     - 特徴マップ : その特徴量が空間全体(32×32×32)に並んだ3次元配列`x[32][32][32]` のこと。
    - **各変数の凡例**:
-     - $\mathbf{out}_t$ : 時間融合後の基準フレーム $t$ の出力特徴マップ(空間全体 `32×32×32` マス分のデータ、形状: `B, 2c, 32, 32, 32`)
-     - $t$ : 現在着目している基準フレームの時刻インデックス
-     - $s \in \{t, t\pm1\}$ : 特徴量を集めてくる参照先フレームの時刻インデックス。前のフレーム($t-1$)、自分自身($t$)、後のフレーム($t+1$)の3枚を走査する。
-     - $\mathbf{x}_t$ : 基準フレーム $t$ のエンコーダ(Coarse段)特徴マップ(コード上の `x[:, i]`、形状: `B, 2c, 32, 32, 32`)
-     - $\mathbf{x}_s$ : 参照先フレーム $s$ のエンコーダ(Coarse段)特徴マップ(コード上の `x[:, j]`、$s=t$ のときは `x[:, i]`)
-     - $\mathbf{p}$ : 元のボクセル空間(`64×256×256`)をエンコーダで縦1/2・横1/8に縮小した後の、**粗いグリッド(`32×32×32` = 元画像の `2×8×8` ボクセル分)での3次元座標 $(z, y, x) \in \mathbb{R}^3$** (`0〜31` のグリッド座標)
-     - $\mathbf{d}_{t,s}$ : 粗いグリッド上の座標 $\mathbf{p}$ から見て、「フレーム $s$ のどこへ細胞が移動したか」をモデルが予測した3次元変位オフセットベクトル $(\Delta z, \Delta y, \Delta x) \in \mathbb{R}^3$。粗いグリッドのマス目単位で各軸最大 $\pm 2.0$ マス($\pm 6.5\text{ }\mu\text{m}$)に制限される(自分自身 $s=t$ のときはズレなし $\mathbf{d}_{t,t} = (0, 0, 0)$)
-     - $\mathbf{x}_s(\mathbf{p} + \mathbf{d}_{t,s})$ : フレーム $s$ の特徴マップ $\mathbf{x}_s$ の中から、移動先の連続座標 $\mathbf{p} + \mathbf{d}_{t,s}$ の1箇所にある**特徴量**を3次元トリリニア補間(`F.grid_sample`)で抜き出したもの(これを全座標 $\mathbf{p}$ について一括で行うことで、位置合わせ済みの特徴マップが作られる)
-     - $a_{t,s}$ : 各マス $\mathbf{p}$ において、3つのフレーム $s \in \{t-1, t, t+1\}$ から抜き出した特徴量をどの割合(重要度)でブレンドするかを表す時間方向のAttention重み(各マスで3フレーム分の合計 $\sum_s a_{t,s} = 1$、範囲は $0 < a_{t,s} < 1$)
-     - $W(\cdot)$ : Attention重み付き和でブレンドされた特徴量のチャネル間を混合し、元の特徴空間へ射影する $1 \times 1 \times 1$ の3D畳み込み層(`self.mix = nn.Conv3d(2c, 2c, kernel_size=1)`)
+     - $\mathbf{out}_t$ : 前後フレームの情報を混ぜ合わせた後の、フレーム $t$ の完成版の特徴マップ(`32×32×32` マス全体)
+     - $\mathbf{x}_t$ : 混ぜ合わせる前の、フレーム $t$ 自身の特徴マップ(元画像を `32×32×32` マスに縮小したもの)
+     - $W$ : 3フレーム分を混ぜ合わせた後の特徴量に掛けて、数値を整えるための重みフィルタ(各マスごとに計算する $1 \times 1 \times 1$ の畳み込み層)
+     - $s \in \{t, t\pm1\}$ : $s$ は右辺の集合を含む。要は、$t-1$:前のフレーム、$t$:今のフレーム、$t+1$:後のフレームの3つを走査対象にする。
+     - $a_{t,s}$ : 「前($t-1$)・今($t$)・後($t+1$)の3つのフレームの特徴量を、**何対何対何の割合で混ぜるか(ブレンド比率)**」を表す数値($0 \sim 1$ の小数)。3フレーム分の割合を足すと必ず $1$ ($100\%$)になる。
+     - $\mathbf{x}_s$ : 比較する相手のフレーム $s$(前・今・後のどれか)の特徴マップ(元画像を `32×32×32` マスに縮小したもの)
+     - $\mathbf{p}$ : 元のボクセル空間(`64×256×256`)を縦1/2・横1/8に縮小した、**粗いグリッド(`32×32×32` = 元画像の `2×8×8` ボクセル分)でのグリッド座標(`0〜31`) $(z, y, x) \in \mathbb{R}^3$** 
+     - $\mathbf{d}_{t,s}$ : 粗いグリッド上の座標 $\mathbf{p}$ から見て、「フレーム $s$ のどこへ細胞が移動したか」をモデルが予測した3次元の移動ズレ $(\Delta z, \Delta y, \Delta x) \in \mathbb{R}^3$。
+     - $\mathbf{x}_s(\mathbf{p} + \mathbf{d}_{t,s})$ : フレーム $s$ の特徴マップ $\mathbf{x}_s$ の中から、細胞の移動先の座標 $\mathbf{p} + \mathbf{d}_{t,s}$ にある**特徴量**を抜き出したもの(小数座標のズレは周囲のマスからなめらかに補間して取得する)
 3. **MultiScale版の改良 (`MultiScaleLineageNet`)**:
    時間融合を `coarse` と `isotropic` の**2段階の解像度**で行い、「検出用」と「リンク用」の特徴アダプタを分けて精度を高めています。
 
