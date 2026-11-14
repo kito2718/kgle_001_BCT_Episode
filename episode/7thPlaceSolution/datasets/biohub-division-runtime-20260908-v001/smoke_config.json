@@ -1,0 +1,19 @@
+{
+  "status": "smoke_only",
+  "solver": {
+    "name": "wiring_smoke",
+    "parent_threshold": 0.1,
+    "positive_cost": 0.1,
+    "pair_parent_threshold": 0.1,
+    "pair_bonus": 0.1,
+    "pair_topk": 3
+  },
+  "post": {
+    "gap": 4.0,
+    "cap": 0.03,
+    "length": 9,
+    "window": 2,
+    "weight": 0.8
+  },
+  "parent_amp": "fp32"
+}

@@ -1,0 +1,5 @@
+{
+  "title": "$DATASET_TITLE",
+  "id": "REPLACE_WITH_KAGGLE_USERNAME/$DATASET_SLUG",
+  "licenses": [{"name": "other"}]
+}

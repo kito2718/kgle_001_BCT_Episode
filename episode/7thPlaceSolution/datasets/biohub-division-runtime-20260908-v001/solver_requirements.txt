@@ -1,0 +1,3 @@
+ilpy==0.6.0
+pyscipopt==6.2.1
+ortools==9.15.6755

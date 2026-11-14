@@ -1,0 +1,24 @@
+{
+  "schema_version": 2,
+  "kind": "biohub_motion_postprocess",
+  "entrypoint": "biohub_highscore_postprocess_ablation.py",
+  "selected_arm": "short_track_linefit",
+  "short_track_min_len": 7,
+  "short_track_min_len_by_dataset": {
+    "6bba_05b6850b": 6
+  },
+  "linefit_window": 2,
+  "linefit_weight": 0.8,
+  "hidden_rerun_safety": {
+    "coordinate_bounds_clip": true,
+    "finite_coordinate_validation": true,
+    "time_and_edge_validation": true,
+    "per_video_control_fallback": true,
+    "explicit_shallow_graph_copy": true,
+    "resource_guard_max_nodes": 200000,
+    "resource_guard_max_edges": 200000,
+    "regression_test": "test_biohub_postprocess_hidden_safety.py"
+  },
+  "entrypoint_sha256": "8fee897003e142f128780c6238510010ae5ed81623b8930f9d70676aba2c3b6b",
+  "source_evidence": "fold-0 score 0.8965376166291922 vs control 0.877715719919543"
+}

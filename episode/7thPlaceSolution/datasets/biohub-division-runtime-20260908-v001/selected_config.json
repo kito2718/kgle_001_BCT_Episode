@@ -1,0 +1,7 @@
+{
+  "status": "unselected",
+  "solver": null,
+  "post": null,
+  "parent_amp": "bf16",
+  "reason": "Await local candidate selection and target-device precision/runtime validation"
+}

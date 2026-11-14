@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "kind": "biohub_motion_nnunet_ilp",
+  "source_commit": "eabb5272c7b3141eadab2f1745dbbc5fb85d1989",
+  "model_relative_dir": "model/nnUNetTrainerBiohubTemporalDilatedBackwardMotionCurriculumXYHalfIter250Long1500__nnUNetResEncUNetMPlans__3d_fullres",
+  "checkpoint": "checkpoint_final.pth",
+  "fold": 0,
+  "nnunet_repo_relative_dir": "runtime/nnUNet",
+  "vendor_relative_dir": "runtime/vendor",
+  "tools_relative_dir": "runtime/tools",
+  "wheels_relative_dir": "wheels",
+  "offline_requirements": "requirements-offline.txt",
+  "model_sha256": "f23d91ff09ad30f6980159669933a3d2b36873940a4a75dbc45d6290f86ec421",
+  "model_training_note": "Corrected d1/d2/d3 curriculum fold-0 final 1500-epoch checkpoint.",
+  "graph_policy": "No GT and no negative-time or out-of-volume virtual nodes.",
+  "postprocess_policy": "short_track_linefit: min component length 7 (6 for 6bba_05b6850b), line-fit window 2, weight 0.8"
+}

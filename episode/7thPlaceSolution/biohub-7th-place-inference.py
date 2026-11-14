@@ -673,6 +673,28 @@ _fs_new = "    if hasattr(signal,'SIGALRM'):\n        previous_handler=signal.si
 assert _fs_old in _fs_txt
 _fs_py.write_text(_fs_txt.replace(_fs_old, _fs_new, 1), encoding='utf-8')
 
+if not IS_KAGGLE:
+    _src_root = LOCAL_ROOT / 'src'
+    _src_root.mkdir(parents=True, exist_ok=True)
+    for _p in sorted((ADDON / 'runtime').rglob('*')):
+        if _p.is_file() and _p.suffix in ('.py', '.json', '.md') and not ({'vendor', 'ortools_runtime', '__pycache__'} & set(_p.parts)):
+            _dst = _src_root / 'runtime' / _p.relative_to(ADDON / 'runtime')
+            _dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_p, _dst)
+    for _p in sorted(CUSTOM_TRAINERS.rglob('*.py')):
+        _dst = _src_root / 'custom_trainers' / _p.relative_to(CUSTOM_TRAINERS)
+        _dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_p, _dst)
+    for _p in sorted(TOOLS.glob('*.py')):
+        _dst = _src_root / 'tools' / _p.name
+        _dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_p, _dst)
+    for _p in sorted((ADDON / 'models').rglob('*.json')):
+        _dst = _src_root / 'models' / _p.relative_to(ADDON / 'models')
+        _dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(_p, _dst)
+    shutil.copy2(CONFIG_PATH, _src_root / 'fixed_parent_config.json')
+
 if CLI_ARGS.setup_only:
     print({'status': 'SETUP_ONLY_COMPLETE', 'portable_division': str(ADDON), 'pretrained_model': str(PRETRAIN_MODEL), 'custom_trainers': str(CUSTOM_TRAINERS)}, flush=True)
     sys.exit(0)

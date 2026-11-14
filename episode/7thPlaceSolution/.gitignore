@@ -1,6 +1,24 @@
-.venv/
-working/
-datasets/
+/.venv/
+/input/
+/working/
 __pycache__/
 *.pyc
 *.log
+
+polars_runtime_32-1.42.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+
+
+# Ignore large binary weights, wheels, TensorRT engines, and vendored 3rd-party packages inside datasets/
+# while keeping all 7th-place original .py, .json, and .md files tracked in Git.
+# datasets/**/*.pth
+# datasets/**/*.pt
+# datasets/**/*.npz
+# datasets/**/*.whl
+# datasets/**/*.engine
+# datasets/**/image_pair_fold2_seed*.txt
+# datasets/**/wheels/
+# datasets/**/vendor/
+# datasets/**/ortools_runtime/
+# datasets/**/nnUNet/
+# datasets/biohub-choice957-offline-deps-20260911/
+# datasets/biohub-m4000-division-trt-t4-engines-0923/

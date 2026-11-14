@@ -19,6 +19,11 @@ Kaggle コンペティション **Biohub - Cell Tracking During Development** �
 │   ├── biohub-choice957-offline-deps-20260911/        # Kaggle オフラインホイール
 │   └── biohub-m4000-division-trt-t4-engines-0923/     # Kaggle Tesla T4 用ビルド済み TensorRT エンジン
 ├── input/                              # ..\input へのジャンクション (test/*.zarr, sample_submission.csv)
+├── src/                                # パッチ統合済みの7位解法全ソースコード (66 .pyファイル + 設定 .json, Git管理対象)
+│   ├── custom_trainers/                # カスタム nnU-Net Trainer (nnUNetTrainerBiohubColabM2000.py)
+│   ├── runtime/                        # 推論・分裂スコアラー・最小費用流+SCIPソルバー・後処理スクリプト一式
+│   ├── tools/                          # GEFF -> submission.csv 変換・評価ツール
+│   └── README.md                       # ステージ別モジュール索引
 ├── working/                            # 推論時の展開コード・中間グラフ (.geff)・最終 submission.csv 出力先
 ├── biohub-7th-place-inference.ipynb    # Kaggle オリジナル推論ノートブック
 ├── biohub-7th-place-inference.py       # ローカル Windows / Kaggle 両対応のスタンドアロン推論スクリプト

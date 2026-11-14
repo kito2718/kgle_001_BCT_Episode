@@ -1,0 +1,21 @@
+{
+  "status": "selected",
+  "arm": "choice",
+  "parent_amp": "fp32",
+  "solver": {
+    "fusion": "pair",
+    "strength": 0.2,
+    "pair_bonus": 0.2,
+    "pair_parent_threshold": 0.1,
+    "pair_topk": 3,
+    "solver_timeout": 1200
+  },
+  "post": {
+    "gap": 4.0,
+    "cap": 0.03,
+    "length": 9,
+    "window": 2,
+    "weight": 0.8
+  },
+  "selection_evidence": "Frozen Fold2 full40 learned pair terms; target parity/time pending. No candidate budgeting."
+}

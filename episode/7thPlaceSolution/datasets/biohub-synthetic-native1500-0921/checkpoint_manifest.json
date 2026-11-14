@@ -1,0 +1,9 @@
+{
+  "source_experiment": "biohub_20260920_synthetic_to_normal_long1500_v001",
+  "sha256": "8e86ed5aaf05f60aee755f909c8236f3c8ab5eca7e29d246da1e7e6ba3be7afb",
+  "bytes": 1627274078,
+  "native_epochs": 1500,
+  "synthetic_epochs": 1000,
+  "checkpoint": "final",
+  "changes": "detector and identity Motion weights"
+}

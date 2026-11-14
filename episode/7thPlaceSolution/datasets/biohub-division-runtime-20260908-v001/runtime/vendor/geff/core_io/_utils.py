@@ -1,0 +1,444 @@
+from __future__ import annotations
+
+import os
+import shutil
+import warnings
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
+
+import numpy as np
+import zarr
+
+from geff import _path
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from numpy.typing import ArrayLike
+    from zarr.storage import StoreLike
+
+    from geff._typing import PropDictNpArray
+
+    T = TypeVar("T")
+
+from urllib.parse import urlparse
+
+
+def is_remote_url(path: str) -> bool:
+    """Returns True if the path is a remote URL (http, https, ftp, sftp), otherwise False.
+
+    Parameters
+    ----------
+    path : str
+        path to a local or remote resource
+
+    Returns
+    -------
+    bool
+        True if the path is a remote URL, False otherwise
+    """
+    parsed = urlparse(path)
+    return parsed.scheme in ("http", "https", "ftp", "sftp")
+
+
+def remove_tilde(store: StoreLike) -> StoreLike:
+    """
+    Remove tilde from a store path/str, because zarr (3?) will not recognize
+        the tilde and write the zarr in the wrong directory.
+
+    Args:
+        store (str | Path | zarr store): The store to remove the tilde from
+
+    Returns:
+        StoreLike: The store with the tilde removed
+    """
+    if isinstance(store, str | Path):
+        store_str = str(store)
+        if "~" in store_str:
+            store = os.path.expanduser(store_str)
+    return store
+
+
+def open_storelike(store: StoreLike) -> zarr.Group:
+    """Opens a StoreLike input as a zarr group
+
+    Args:
+        store (str | Path | zarr store): str/Path/store for a geff zarr
+
+    Raises:
+        FileNotFoundError: Path does not exist
+        ValueError: store must be a zarr StoreLike
+
+    Returns:
+        zarr.Group: Opened zarr group
+    """
+    # Check if path exists for string/Path inputs
+    if isinstance(store, str | Path):
+        store_path = Path(store)
+        if not is_remote_url(str(store_path)) and not store_path.exists():
+            raise FileNotFoundError(f"Path does not exist: {store}")
+
+    # Check for zarr spec v3 files being opened with zarr python v2 and warn if so
+    if zarr.__version__.startswith("2"):
+        spec_version = _detect_zarr_spec_version(store)
+        if spec_version == 3:
+            warnings.warn(
+                "Attempting to open a zarr spec v3 file with zarr-python v2. "
+                "This may cause compatibility issues. Consider upgrading to zarr-python v3 "
+                "or recreating the file with zarr spec v2.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    # Open the zarr group from the store
+    try:
+        graph_group = zarr.open_group(store, mode="r")
+    except Exception as e:
+        raise ValueError(f"store must be a zarr StoreLike: {e}") from e
+
+    return graph_group
+
+
+# -----------------------------------------------------------------------------#
+# helpers
+# -----------------------------------------------------------------------------#
+
+
+def expect_array(parent: zarr.Group, key: str, parent_name: str = "array") -> zarr.Array:
+    """Return an array in the parent group with the given key, or raise ValueError."""
+    arr = parent.get(key)
+    if not isinstance(arr, zarr.Array):
+        raise ValueError(f"{parent_name!r} group must contain an {key!r} array")
+    return arr
+
+
+def expect_group(parent: zarr.Group, key: str, parent_name: str = "graph") -> zarr.Group:
+    """Return a group in the parent group with the given key, or raise ValueError."""
+    grp = parent.get(key)
+    if not isinstance(grp, zarr.Group):
+        raise ValueError(f"{parent_name!r} group must contain a group named {key!r}")
+    return grp
+
+
+def _detect_zarr_spec_version(store: StoreLike) -> int | None:
+    """Detect the zarr specification version of an existing zarr store.
+
+    Args:
+        store: The zarr store path or object
+
+    Returns:
+        int | None: The zarr spec version (2 or 3) if detectable, None if unknown
+    """
+    try:
+        if isinstance(store, str | Path):
+            store_path = Path(store)
+            # Check for zarr v3 indicator: zarr.json instead of .zarray/.zgroup
+            if (store_path / "zarr.json").exists():
+                return 3
+            # Check for zarr v2 indicators
+            elif (store_path / ".zgroup").exists() or (store_path / ".zarray").exists():
+                return 2
+        else:
+            # For store objects, try to detect based on metadata
+            group = zarr.open_group(store, mode="r")
+            # In zarr v3, metadata is stored differently
+            if group.metadata.zarr_format == 3:  # pyright: ignore
+                return 3
+            elif group.metadata.zarr_format == 2:  # pyright: ignore
+                return 2
+    except Exception:
+        # If we can't detect, return None
+        pass
+
+    return None
+
+
+def setup_zarr_group(store: StoreLike, zarr_format: Literal[2, 3] = 2) -> zarr.Group:
+    """Set up and return a zarr group for writing.
+
+    Args:
+        store: The zarr store path or object
+        zarr_format: The zarr format version to use
+
+    Returns:
+        The opened zarr group
+    """
+    store = remove_tilde(store)
+
+    # Check for trying to write zarr spec v3 with zarr python v2 and warn if so
+    if zarr_format == 3 and zarr.__version__.startswith("2"):
+        warnings.warn(
+            "Requesting zarr spec v3 with zarr-python v2. "
+            "zarr-python v2 does not support spec v3. "
+            "Ignoring zarr_format=3 and writing zarr spec v2 instead. "
+            "Consider upgrading to zarr-python v3 to write zarr spec v3 files.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # open/create zarr container
+    if zarr.__version__.startswith("3"):
+        return zarr.open_group(store, mode="a", zarr_format=zarr_format)
+    else:
+        return zarr.open_group(store, mode="a")
+
+
+def _get_common_type_dims(arr_seq: Sequence[ArrayLike | None]) -> tuple[np.dtype, int]:
+    """Get a common dtype and number of dimensions that will work for all elements.
+
+    Will use native numpy casting to unify all the dtypes, and will take the maximum
+    number of dimensions of the elements. Nones are ignored.
+
+    Args:
+        arr_seq (Sequence[ArrayLike | None]): A sequence of array-like elements and Nones
+            to infer the dtype and number of dimensions for.
+
+    Raises:
+        ValueError: If the elements do not have any shared dtype that can be cast to safely.
+
+    Returns:
+        tuple[np.dtype, int]: A dtype that all non-None elements can be cast to, and the
+            maximum number of dimensions of any non-None element
+    """
+    ndim = None
+    dtype = None
+
+    for arr in arr_seq:
+        if arr is None:
+            continue
+        element = np.asarray(arr)
+        if ndim is None:
+            ndim = element.ndim
+            dtype = element.dtype
+        else:
+            ndim = max(element.ndim, ndim)
+            assert dtype is not None  # Set in previous iteration when ndim was None
+            if np.can_cast(dtype, element.dtype):
+                dtype = np.promote_types(dtype, element.dtype)
+            else:
+                raise ValueError(
+                    "All elements must have compatible dtypes. Cannot"
+                    f"cast {dtype} and {element.dtype}."
+                )
+
+    if dtype is None or ndim is None:
+        warnings.warn(
+            "Variable length property sequence does not have any non-None elements - "
+            "using ndim=1 and dtype=int64",
+            stacklevel=2,
+        )
+        dtype = np.dtype("int64")
+        ndim = 1
+    return dtype, ndim
+
+
+def default_for_value(value: Any) -> Any:
+    """Return a type-appropriate default value for filling missing entries.
+
+    Handles both native Python types and numpy scalar types (e.g. np.bool_,
+    np.int64, np.float32) which commonly arise when iterating pandas DataFrames.
+    For numpy scalars, returns a zero of the same dtype to avoid unnecessary
+    upcasting when the values are later combined into a numpy array.
+
+    Uses the following heuristics:
+    - np.generic (np.bool_, np.int64, np.float32, etc.) -> type(value)(0)
+    - bool, int, float -> type(value)(0) (e.g. False, 0, 0.0)
+    - str -> ""
+    - Otherwise, returns the value itself, which preserves type and shape but
+      may be confusing or inefficient for some types.
+
+    Args:
+        value: A non-None example value to determine the default from.
+
+    Returns:
+        A default value with the same type (and shape, for the fallback case).
+    """
+    if isinstance(value, np.generic | bool | int | float):
+        return type(value)(0)
+    elif isinstance(value, str):
+        return ""
+    else:
+        return value
+
+
+def _infer_int_dtype(values: np.ndarray) -> np.dtype:
+    """Infer the smallest integer dtype that can represent all values.
+
+    Uses an unsigned type when all values are non-negative, otherwise signed.
+
+    Args:
+        values (np.ndarray): 1-D array of integer values.
+
+    Returns:
+        np.dtype: The smallest numpy integer dtype that fits the data.
+    """
+    min_val = values.min()
+    max_val = values.max()
+
+    if min_val < 0:
+        for signed in (np.int8, np.int16, np.int32, np.int64):
+            info = np.iinfo(signed)
+            if info.min <= min_val and max_val <= info.max:
+                return np.dtype(signed)
+    else:
+        for unsigned in (np.uint8, np.uint16, np.uint32, np.uint64):
+            if max_val <= np.iinfo(unsigned).max:
+                return np.dtype(unsigned)
+
+    raise ValueError(f"ID values (min={min_val}, max={max_val}) exceed supported integer range")
+
+
+def construct_props(values: Sequence[Any | None]) -> PropDictNpArray:
+    """Convert a sequence of values with possible None entries into a PropDictNpArray.
+
+    Builds a values array and a missing mask from the input sequence. None entries
+    are replaced with a type-appropriate default value (False for bool, 0 for int/float,
+    "" for str) determined from the first non-None entry. The missing mask indicates
+    which positions were None.
+
+    For integer dtypes, the smallest bit width is chosen that can represent the values.
+
+    Non-None values are expected to have a consistent type and shape so they can
+    form a regular numpy array. For variable-length or variable-shape values, use
+    construct_var_len_props instead.
+
+    Args:
+        values: A sequence of values with one entry per node or edge.
+            Missing values are indicated by None entries.
+
+    Returns:
+        PropDictNpArray: A dict with "values" as a numpy array of the appropriate dtype
+            and "missing" as a boolean numpy array (or None if no values were missing).
+    """
+    filled_values = []
+    missing = np.zeros(len(values), dtype=np.bool_)
+    default_val = None
+    missing_any = False
+
+    for i, value in enumerate(values):
+        if value is None:
+            if default_val is None:
+                # find first non-None value to determine default
+                for v in values:
+                    if v is not None:
+                        default_val = default_for_value(v)
+                        break
+                else:
+                    warnings.warn(
+                        "All values are None. Using 0 as the default.",
+                        stacklevel=2,
+                    )
+                    default_val = 0
+            filled_values.append(default_val)
+            missing[i] = True
+            missing_any = True
+        else:
+            filled_values.append(value)
+
+    values_arr = np.asarray(filled_values)
+    if np.issubdtype(values_arr.dtype, np.integer):
+        values_arr = values_arr.astype(_infer_int_dtype(values_arr))
+
+    return {
+        "values": values_arr,
+        "missing": missing if missing_any else None,
+    }
+
+
+def construct_var_len_props(arr_seq: Sequence[ArrayLike | None]) -> PropDictNpArray:
+    """Converts a sequence of array like and None objects into a geff._typing.PropDictNpArray
+
+    Creates a missing array with the indices of the None objects. Converts each element of
+    the sequence into a numpy array. Prepends dummy dimensions to each element to ensure
+    all elements have the same number of dimensions. Casts all arrays into a common dtype
+    (if there is one). Turns the sequence into a numpy array with dtype object.
+
+    Args:
+        arr_seq (Sequence[ArrayLike | None]): A sequence of properties, with one entry
+            per node or edge. Missing values are indicated by None entries.
+
+    Returns:
+        PropDictNpArray: A standardized version of the input properties where all entries
+            are numpy arrays contained in an object array.
+    """
+    values_arr = np.empty(shape=(len(arr_seq),), dtype=np.object_)
+    missing_arr = np.zeros(shape=(len(arr_seq),), dtype=np.bool_)
+
+    dtype, ndim = _get_common_type_dims(arr_seq)
+
+    for i, arr in enumerate(arr_seq):
+        if arr is None:
+            missing_arr[i] = 1
+            empty_shape = tuple(0 for _ in range(ndim))
+            default_val = np.empty(shape=empty_shape, dtype=dtype)
+            values_arr[i] = default_val
+        else:
+            element = np.asarray(arr, dtype=dtype)
+            # prepend dummy axes if needed
+            while element.ndim < ndim:
+                element = np.expand_dims(element, axis=0)
+            values_arr[i] = element
+    return {"values": values_arr, "missing": missing_arr if missing_arr.any() else None}
+
+
+def delete_geff(store: StoreLike, zarr_format: Literal[2, 3] = 2) -> None:
+    """Delete a geff after writing
+
+    Tries to handle multiple StoreLike inputs and avoids deleting non-geff contents
+    in the store
+
+    Args:
+        store (StoreLike): StoreLike geff that should be deleted
+        zarr_format (Literal[2, 3], optional): Zarr format used to write input store. Defaults to 2.
+    """
+    root = setup_zarr_group(store, zarr_format=zarr_format)
+
+    # Delete node and edge groups
+    del root[_path.NODES]
+    del root[_path.EDGES]
+
+    # If the root is empty, try to delete the root zarr
+    if len(list(root.keys())) == 0:
+        # Handle Path or str storelike
+        if isinstance(store, Path) or isinstance(store, str):
+            shutil.rmtree(store)
+        else:
+            # Try to get a valid path from the store
+            try:
+                path = store.path  # type: ignore
+                if os.path.exists(path):
+                    shutil.rmtree(path)
+            except AttributeError:
+                warnings.warn(
+                    "Cannot delete root zarr directory, but geff contents have been deleted",
+                    stacklevel=2,
+                )
+                del root.attrs["geff"]
+    else:
+        warnings.warn(
+            "Found non-geff members in zarr. Exiting without deleting root zarr.", stacklevel=2
+        )
+        # Delete geff metadata from attrs
+        del root.attrs["geff"]
+
+
+def check_for_geff(store: StoreLike, zarr_format: Literal[2, 3] = 2) -> bool:
+    """Check a StoreLike for an existing geff and return True if already present
+
+    Args:
+        store (StoreLike): StoreLike to check for a geff
+        zarr_format (Literal[2, 3], optional): Defaults to 2.
+
+    Returns:
+        bool: True if a geff already exists
+    """
+    if isinstance(store, Path):
+        exists = store.exists()
+    elif isinstance(store, str):
+        exists = os.path.exists(store)
+    # If store is already open, check for geff key in metadata
+    else:
+        root = setup_zarr_group(store, zarr_format=zarr_format)
+        exists = "geff" in root.attrs
+
+    return exists

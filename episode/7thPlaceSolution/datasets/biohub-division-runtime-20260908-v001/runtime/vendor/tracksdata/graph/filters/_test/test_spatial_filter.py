@@ -1,0 +1,448 @@
+from types import MethodType
+
+import numpy as np
+import polars as pl
+import pytest
+
+from tracksdata import DEFAULT_ATTR_KEYS
+from tracksdata.graph import BaseGraph, RustWorkXGraph
+from tracksdata.graph.filters._spatial_filter import BBoxSpatialFilter, SpatialFilter
+
+
+@pytest.fixture
+def sample_graph() -> RustWorkXGraph:
+    """Create a sample graph with nodes for testing."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("z", dtype=pl.Int64)
+    graph.add_node_attr_key("y", dtype=pl.Int64)
+    graph.add_node_attr_key("x", dtype=pl.Int64)
+
+    # Add some nodes with spatial coordinates
+    nodes = [
+        {"t": 0, "z": 0, "y": 10, "x": 20},
+        {"t": 0, "z": 0, "y": 30, "x": 40},
+        {"t": 1, "z": 1, "y": 50, "x": 60},
+        {"t": 2, "z": 2, "y": 90, "x": 100},
+    ]
+
+    for node_attrs in nodes:
+        graph.add_node(node_attrs)
+
+    return graph
+
+
+@pytest.fixture
+def sample_bbox_graph() -> RustWorkXGraph:
+    """Create a sample graph with nodes for bounding box testing."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("bbox", dtype=pl.Array(pl.Int64, 6))
+
+    # Add some nodes with bounding box coordinates
+    nodes = [
+        {"t": 0, "bbox": [0, 10, 20, 1, 15, 25]},
+        {"t": 0, "bbox": [0, 30, 40, 1, 35, 45]},
+        {"t": 1, "bbox": [1, 50, 60, 2, 55, 65]},
+        {"t": 2, "bbox": [2, 90, 100, 3, 95, 105]},
+    ]
+
+    for node_attrs in nodes:
+        graph.add_node(node_attrs)
+
+    return graph
+
+
+def test_spatial_filter_initialization(sample_graph: RustWorkXGraph) -> None:
+    """Test SpatialFilter initialization with default and custom attributes."""
+    # Test default attributes
+    spatial_filter = SpatialFilter(sample_graph)
+    assert spatial_filter._df_filter._attr_keys == ["t", "z", "y", "x"]
+
+    # Test custom attributes
+    custom_attrs = ["t", "y", "x"]
+    spatial_filter = SpatialFilter(sample_graph, attr_keys=custom_attrs)
+    assert spatial_filter._df_filter._attr_keys == custom_attrs
+
+
+def test_spatial_filter_caches_filters(sample_graph: RustWorkXGraph, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure spatial filters are reused when called with the same arguments."""
+    created_attr_keys = []
+
+    class DummySpatialFilter:
+        def __init__(self, graph: BaseGraph, attr_keys: list[str] | None = None) -> None:
+            self.graph = graph
+            self.attr_keys = attr_keys
+            created_attr_keys.append(attr_keys)
+
+    monkeypatch.setattr("tracksdata.graph.filters._spatial_filter.SpatialFilter", DummySpatialFilter)
+
+    first = sample_graph.spatial_filter(attr_keys=["y", "x"])
+    second = sample_graph.spatial_filter(attr_keys=["y", "x"])
+    default_first = sample_graph.spatial_filter()
+    default_second = sample_graph.spatial_filter()
+
+    assert first is second
+    assert default_first is default_second
+    assert first is not default_first
+    assert created_attr_keys == [["y", "x"], None]
+
+    sample_graph.clear_cache()
+    third = sample_graph.spatial_filter(attr_keys=["y", "x"])
+
+    assert third is not first
+    assert created_attr_keys == [["y", "x"], None, ["y", "x"]]
+
+
+def test_bbox_spatial_filter_caches_filters(sample_graph: RustWorkXGraph, monkeypatch: pytest.MonkeyPatch) -> None:
+    created_attr_keys = []
+
+    class DummyBBoxSpatialFilter:
+        def __init__(self, graph: "BaseGraph", frame_attr_key: str | None = "t", bbox_attr_key: str = "bbox") -> None:
+            self.graph = graph
+            created_attr_keys.append((frame_attr_key, bbox_attr_key))
+
+    monkeypatch.setattr("tracksdata.graph.filters._spatial_filter.BBoxSpatialFilter", DummyBBoxSpatialFilter)
+
+    first = sample_graph.bbox_spatial_filter(frame_attr_key="frame", bbox_attr_key="bbox2")
+    second = sample_graph.bbox_spatial_filter(frame_attr_key="frame", bbox_attr_key="bbox2")
+    default_first = sample_graph.bbox_spatial_filter()
+    default_second = sample_graph.bbox_spatial_filter()
+
+    assert first is second
+    assert default_first is default_second
+    assert first is not default_first
+    assert created_attr_keys == [("frame", "bbox2"), (DEFAULT_ATTR_KEYS.T, DEFAULT_ATTR_KEYS.BBOX)]
+
+    sample_graph.clear_cache()
+    third = sample_graph.bbox_spatial_filter(frame_attr_key="frame", bbox_attr_key="bbox2")
+    assert third is not first
+    assert created_attr_keys == [("frame", "bbox2"), (DEFAULT_ATTR_KEYS.T, DEFAULT_ATTR_KEYS.BBOX), ("frame", "bbox2")]
+
+
+def test_spatial_filter_querying(sample_graph: RustWorkXGraph) -> None:
+    """Test spatial querying with different bounds and dimensions."""
+    spatial_filter = SpatialFilter(sample_graph)
+
+    # Test valid bounds that include nodes
+    result = spatial_filter[0:2, 0:2, 0:100, 0:100]
+    node_attrs = result.node_attrs()
+    assert not node_attrs.is_empty()
+
+    # Test narrow bounds that exclude most nodes
+    result = spatial_filter[0:1, 0:1, 0:15, 0:25]
+    node_attrs = result.node_attrs()
+    assert len(node_attrs) <= 1
+
+    # Test bounds that exclude all nodes
+    result = spatial_filter[10:20, 10:20, 200:300, 200:300]
+    node_attrs = result.node_attrs()
+    assert node_attrs.is_empty()
+
+
+def test_spatial_filter_dimensions() -> None:
+    """Test SpatialFilter with different coordinate dimensions."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("z", dtype=pl.Int64)
+    graph.add_node_attr_key("y", dtype=pl.Int64)
+    graph.add_node_attr_key("x", dtype=pl.Int64)
+    graph.add_node({"t": 0, "z": 0, "y": 10, "x": 20})
+
+    # Test 2D coordinates
+    spatial_filter_2d = SpatialFilter(graph, attr_keys=["y", "x"])
+    assert spatial_filter_2d._df_filter._attr_keys == ["y", "x"]
+    result = spatial_filter_2d[0:50, 0:50]
+    assert not result.node_attrs().is_empty()
+
+    # Test 3D coordinates
+    spatial_filter_3d = SpatialFilter(graph, attr_keys=["z", "y", "x"])
+    assert spatial_filter_3d._df_filter._attr_keys == ["z", "y", "x"]
+    result = spatial_filter_3d[0:2, 0:100, 0:100]
+    assert not result.node_attrs().is_empty()
+
+
+def test_spatial_filter_error_handling(sample_graph: RustWorkXGraph) -> None:
+    """Test error handling for invalid slice counts."""
+    spatial_filter = SpatialFilter(sample_graph)
+
+    # Test wrong number of slices
+    with pytest.raises(ValueError, match="Expected 4 keys, got 3"):
+        spatial_filter[0:2, 0:1, 0:50]
+
+
+def test_spatial_filter_with_edges() -> None:
+    """Test SpatialFilter preserves edges in subgraphs."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("y", dtype=pl.Int64)
+    graph.add_node_attr_key("x", dtype=pl.Int64)
+    graph.add_edge_attr_key("weight", dtype=pl.Float64)
+
+    # Add nodes and edge
+    node1_id = graph.add_node({"t": 0, "y": 10, "x": 20})
+    node2_id = graph.add_node({"t": 1, "y": 30, "x": 40})
+    graph.add_edge(node1_id, node2_id, {"weight": 1.0})
+
+    spatial_filter = SpatialFilter(graph, attr_keys=["y", "x"])
+    result = spatial_filter[0:50, 0:50]
+
+    # Should preserve both nodes and the edge
+    assert len(result.node_attrs()) == 2
+    assert len(result.edge_attrs()) == 1
+
+
+def test_bbox_spatial_filter_overlaps() -> None:
+    """Test BoundingBoxSpatialFilter overlaps with existing nodes."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("bbox", dtype=pl.Array(pl.Int64, 4))
+    # Add nodes with bounding boxes
+    bboxes = [
+        [0, 20, 10, 30],  # Node 1
+        [5, 25, 15, 35],  # Node 2
+        [10, 30, 20, 40],  # Node 3
+        [15, 35, 25, 45],  # Node 4
+    ]
+    node_ids = graph.bulk_add_nodes([{"t": 0, "bbox": bbox} for bbox in bboxes])
+
+    spatial_filter = BBoxSpatialFilter(graph, frame_attr_key="t", bbox_attr_key="bbox")
+    result = spatial_filter[0:0, 15:20, 0:40]
+    assert set(result.node_ids()) == set(node_ids[1:])
+    result = spatial_filter[0:0, 15:20, 36:40]
+    assert set(result.node_ids()) == set(node_ids[2:])
+
+    # Should return both nodes
+    assert len(result.node_attrs()) == 2
+
+
+def test_bbox_spatial_filter_with_edges() -> None:
+    """Test SpatialFilter preserves edges in subgraphs."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("bbox", dtype=pl.Array(pl.Int64, 4))
+    graph.add_edge_attr_key("weight", dtype=pl.Float64)
+
+    # Add nodes and edge
+    node1_id = graph.add_node({"t": 0, "bbox": [10, 20, 15, 25]})
+    node2_id = graph.add_node({"t": 1, "bbox": [30, 40, 35, 45]})
+    graph.add_edge(node1_id, node2_id, {"weight": 1.0})
+
+    spatial_filter = BBoxSpatialFilter(graph, frame_attr_key="t", bbox_attr_key="bbox")
+    result = spatial_filter[0:1, 0:50, 0:50]
+
+    # Should preserve both nodes and the edge
+    assert len(result.node_attrs()) == 2
+    assert len(result.edge_attrs()) == 1
+
+
+def test_bbox_spatial_filter_initialization(sample_bbox_graph: RustWorkXGraph) -> None:
+    """Test BoundingBoxSpatialFilter initialization with default and custom attributes."""
+    spatial_filter = BBoxSpatialFilter(sample_bbox_graph)
+    assert spatial_filter._node_rtree is not None
+
+    spatial_filter = BBoxSpatialFilter(sample_bbox_graph, frame_attr_key="t", bbox_attr_key="bbox")
+    assert spatial_filter._node_rtree is not None
+
+
+def test_bbox_spatial_filter_querying(sample_bbox_graph: RustWorkXGraph) -> None:
+    """Test bounding box spatial querying with different bounds and dimensions."""
+    spatial_filter = BBoxSpatialFilter(sample_bbox_graph, frame_attr_key="t", bbox_attr_key="bbox")
+
+    # Test valid bounds that include nodes
+    result = spatial_filter[0:3, 0:3, 0:100, 0:110]
+    node_attrs = result.node_attrs()
+    assert not node_attrs.is_empty()
+
+    # Test narrow bounds that should include specific nodes
+    result = spatial_filter[0:1, 0:2, 10:20, 20:30]
+    node_attrs = result.node_attrs()
+    assert len(node_attrs) >= 1
+    assert len(node_attrs) < sample_bbox_graph.num_nodes()
+
+    # Test bounds that exclude all nodes
+    result = spatial_filter[10:20, 10:20, 200:300, 200:300]
+    node_attrs = result.node_attrs()
+    assert node_attrs.is_empty()
+
+
+def test_bbox_spatial_filter_dimensions() -> None:
+    """Test BoundingBoxSpatialFilter with different coordinate dimensions."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("bbox", dtype=pl.Array(pl.Int64, 6))
+    graph.add_node({"t": 0, "bbox": [0, 10, 20, 1, 15, 25]})
+
+    # Test 3D coordinates
+    spatial_filter = BBoxSpatialFilter(graph, frame_attr_key="t", bbox_attr_key="bbox")
+    result = spatial_filter[0:2, 0:50, 0:50, 0:50]
+    assert not result.node_attrs().is_empty()
+
+    with pytest.raises(ValueError, match="Expected 4 keys, got 3"):
+        # Test wrong number of slices
+        spatial_filter[0:2, 0:50, 0:50]
+
+    # Only spatial coordinates
+    spatial_filter = BBoxSpatialFilter(graph, frame_attr_key=None, bbox_attr_key="bbox")
+    result = spatial_filter[0:50, 0:50, 0:50]
+    assert not result.node_attrs().is_empty()
+
+
+def test_bbox_spatial_filter_error_handling() -> None:
+    """Test error handling for mismatched min/max attribute lengths."""
+    graph = RustWorkXGraph()
+    graph.add_node_attr_key("bbox", dtype=pl.Array(pl.Int64, 5))
+    graph.add_node({"t": 0, "bbox": [10, 20, 15, 25, 14]})
+    # Test mismatched min/max attributes length
+    with pytest.raises(ValueError, match="Bounding box coordinates must have even number of dimensions"):
+        BBoxSpatialFilter(graph, frame_attr_key="t", bbox_attr_key="bbox")
+
+
+def test_add_and_remove_node(graph_backend: BaseGraph) -> None:
+    graph_backend.add_node_attr_key("bbox", pl.Array(pl.Int64, 4))
+
+    # testing if _node_tree is created in BBoxSpatialFilter when graph is empty
+    _ = BBoxSpatialFilter(graph_backend, frame_attr_key="t", bbox_attr_key="bbox")
+
+    graph_backend.add_node({"t": 0, "bbox": np.asarray([1, 1, 5, 5])})
+    graph_backend.add_node({"t": 1, "bbox": np.asarray([10, 10, 15, 15])})
+
+    # testing it twice, once in the original and then in a trivial graph view
+    for graph in [graph_backend, graph_backend.filter().subgraph()]:
+        assert graph.num_nodes() == 2
+
+        spatial_filter = BBoxSpatialFilter(graph, frame_attr_key="t", bbox_attr_key="bbox")
+
+        empty_region = spatial_filter[0:3, 6:9, 6:9].node_attrs()
+        assert empty_region.is_empty()
+
+        print(graph)
+
+        new_node_id = graph.add_node({"t": 2, "bbox": np.asarray([7, 7, 8, 8])})
+
+        assert len(spatial_filter._node_rtree) == 3
+
+        result = spatial_filter[0:3, 6:9, 6:9].node_attrs()
+        assert len(result) == 1
+        assert result["t"].item() == 2
+
+        bulk_node_ids = graph.bulk_add_nodes([{"t": 0, "bbox": np.asarray([11, 11, 12, 12])}])
+
+        # narrow bounds in time point to avoid overlaps
+        result = spatial_filter[0:0.5, 11:12, 11:12].node_attrs()
+        assert len(result) == 1
+        assert result["t"].item() == 0
+
+        size = graph.num_nodes()
+
+        graph.remove_node(new_node_id)
+
+        assert graph.num_nodes() == size - 1
+
+        empty_region = spatial_filter[0:3, 6:9, 6:9].node_attrs()
+        assert empty_region.is_empty()
+
+        # clean up bulk addition for next iteration
+        for node_id in bulk_node_ids:
+            graph.remove_node(node_id)
+
+        assert graph.num_nodes() == 2
+
+
+def test_spatial_filter_add_update_and_remove_node(graph_backend: BaseGraph) -> None:
+    graph_backend.add_node_attr_key("y", pl.Int64)
+    graph_backend.add_node_attr_key("x", pl.Int64)
+
+    graph_backend.add_node({"t": 0, "y": 1, "x": 1})
+    graph_backend.add_node({"t": 1, "y": 10, "x": 10})
+
+    for graph in [graph_backend, graph_backend.filter().subgraph()]:
+        spatial_filter = SpatialFilter(graph, attr_keys=[DEFAULT_ATTR_KEYS.T, "y", "x"])
+
+        assert spatial_filter[2:3, 6:9, 6:9].node_attrs().is_empty()
+
+        new_node_id = graph.add_node({"t": 2, "y": 7, "x": 7})
+        result_ids = spatial_filter[2:3, 6:9, 6:9].node_ids()
+        assert new_node_id in result_ids
+
+        graph.update_node_attrs(attrs={"y": 20, "x": 20}, node_ids=[new_node_id])
+
+        assert spatial_filter[2:3, 6:9, 6:9].node_attrs().is_empty()
+        moved_ids = spatial_filter[2:3, 19:22, 19:22].node_ids()
+        assert new_node_id in moved_ids
+
+        graph.remove_node(new_node_id)
+        assert spatial_filter[2:3, 19:22, 19:22].node_attrs().is_empty()
+
+
+def test_bbox_spatial_filter_updates_node_position(graph_backend: BaseGraph) -> None:
+    graph_backend.add_node_attr_key("bbox", pl.Array(pl.Int64, 4))
+    moved_node_id = graph_backend.add_node({"t": 0, "bbox": np.asarray([0, 0, 2, 2])})
+    graph_backend.add_node({"t": 1, "bbox": np.asarray([10, 10, 12, 12])})
+
+    for graph in [graph_backend, graph_backend.filter().subgraph()]:
+        graph.update_node_attrs(
+            attrs={"bbox": [np.asarray([0, 0, 2, 2])]},
+            node_ids=[moved_node_id],
+        )
+
+        spatial_filter = BBoxSpatialFilter(graph, frame_attr_key="t", bbox_attr_key="bbox")
+        assert moved_node_id in spatial_filter[0:0.5, 0:3, 0:3].node_ids()
+
+        graph.update_node_attrs(
+            attrs={"bbox": [np.asarray([20, 20, 22, 22])]},
+            node_ids=[moved_node_id],
+        )
+
+        assert moved_node_id not in spatial_filter[0:0.5, 0:3, 0:3].node_ids()
+        assert moved_node_id in spatial_filter[0:0.5, 19:23, 19:23].node_ids()
+
+
+def test_bbox_spatial_filter_update_non_bbox_attr_no_error(graph_backend: BaseGraph) -> None:
+    """Updating a non-bbox attribute must not cause a KeyError in BBoxSpatialFilter.
+
+    Regression test: GraphView.update_node_attrs previously emitted node_updated
+    with old_attrs containing only the updated keys, omitting bbox when it was not
+    part of the update — causing a KeyError in _update_node.
+    """
+    graph_backend.add_node_attr_key("bbox", pl.Array(pl.Int64, 4))
+    graph_backend.add_node_attr_key("score", pl.Float32)
+    node_id = graph_backend.add_node({"t": 0, "bbox": np.asarray([0, 0, 2, 2]), "score": 1.0})
+
+    for graph in [graph_backend, graph_backend.filter().subgraph()]:
+        spatial_filter = BBoxSpatialFilter(graph, frame_attr_key="t", bbox_attr_key="bbox")
+        assert node_id in spatial_filter[0:0.5, 0:3, 0:3].node_ids()
+
+        # Update only 'score' — bbox is not in attrs, so it was missing from the signal.
+        graph.update_node_attrs(attrs={"score": 2.0}, node_ids=[node_id])
+
+        # Node must still be found at its original spatial position (no KeyError).
+        assert node_id in spatial_filter[0:0.5, 0:3, 0:3].node_ids()
+
+
+def test_bbox_spatial_filter_handles_list_dtype(graph_backend: BaseGraph) -> None:
+    """Ensure bounding boxes stored as list dtype still work with the spatial filter."""
+    graph_backend.add_node_attr_key(DEFAULT_ATTR_KEYS.BBOX, pl.Array(pl.Int64, 4))
+    first = graph_backend.add_node({"t": 0, "bbox": [0, 0, 2, 2]})
+    second = graph_backend.add_node({"t": 1, "bbox": [5, 5, 8, 8]})
+
+    original_node_attrs = graph_backend.node_attrs
+    list_df = original_node_attrs(
+        attr_keys=[DEFAULT_ATTR_KEYS.NODE_ID, DEFAULT_ATTR_KEYS.T, DEFAULT_ATTR_KEYS.BBOX],
+        unpack=False,
+    ).with_columns(pl.col(DEFAULT_ATTR_KEYS.BBOX).cast(pl.List(pl.Int64)))
+
+    def _list_dtype_node_attrs(
+        self: BaseGraph, *, attr_keys: list[str] | None = None, unpack: bool = False
+    ) -> pl.DataFrame:
+        if attr_keys is None or set(attr_keys) == {
+            DEFAULT_ATTR_KEYS.NODE_ID,
+            DEFAULT_ATTR_KEYS.T,
+            DEFAULT_ATTR_KEYS.BBOX,
+        }:
+            return list_df
+        return original_node_attrs(attr_keys=attr_keys, unpack=unpack)
+
+    graph_backend.node_attrs = MethodType(_list_dtype_node_attrs, graph_backend)
+
+    spatial_filter = BBoxSpatialFilter(
+        graph_backend,
+        frame_attr_key=DEFAULT_ATTR_KEYS.T,
+        bbox_attr_key=DEFAULT_ATTR_KEYS.BBOX,
+    )
+    result_ids = spatial_filter[0:0, 0:3, 0:3].node_ids()
+    assert first in result_ids
+    assert second not in result_ids

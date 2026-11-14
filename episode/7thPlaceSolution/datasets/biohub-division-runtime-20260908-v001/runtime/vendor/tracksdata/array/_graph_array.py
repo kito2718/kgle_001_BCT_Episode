@@ -1,0 +1,485 @@
+from collections.abc import Sequence
+from copy import copy
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+
+from tracksdata.array._base_array import ArrayIndex, BaseReadOnlyArray
+from tracksdata.array._nd_chunk_cache import NDChunkCache
+from tracksdata.constants import DEFAULT_ATTR_KEYS
+from tracksdata.graph._base_graph import BaseGraph
+from tracksdata.options import get_options
+from tracksdata.utils._dtypes import polars_dtype_to_numpy_dtype
+
+if TYPE_CHECKING:
+    from tracksdata.nodes._mask import Mask
+
+
+def _validate_shape(
+    shape: tuple[int, ...] | None,
+    graph: BaseGraph,
+    func_name: str,
+) -> tuple[int, ...]:
+    """Helper function to validate the shape argument."""
+    if shape is None:
+        try:
+            shape = graph.metadata["shape"]
+        except KeyError as e:
+            raise KeyError(
+                f"`shape` is required to `{func_name}`. "
+                "Please provide a `shape` argument or set the `shape` in the graph metadata."
+            ) from e
+    return shape
+
+
+def chain_indices(slicing1: ArrayIndex | None, slicing2: ArrayIndex | None) -> ArrayIndex:
+    """Chain two array indexing operations into a single one.
+
+    Parameters
+    ----------
+    slicing1 : ArrayIndex | None
+        The first array indexing operation.
+    slicing2 : ArrayIndex | None
+        The second array indexing operation.
+
+    Returns
+    -------
+    ArrayIndex
+        The chained array index.
+
+    Examples
+    --------
+    ```python
+    chain_indices(slice(3, 20), slice(5, 15))
+    slice(8, 18, None)
+    chain_indices(slice(3, 20), slice(5, None))
+    slice(8, 20, None)
+    chain_indices(slice(3, 20), slice(None, 15))
+    slice(3, 18, None)
+    chain_indices(slice(3, 20), 4)
+    7
+    chain_indices(slice(3, 20), (4, 5))
+    [7, 8]
+    chain_indices((5, 6, 7, 8, 9, 10), (3, 5))
+    [8, 10]
+    ```
+    """
+    if slicing2 is None:
+        return slicing1
+
+    if isinstance(slicing1, slice):
+        new_slicing = range(max(slicing1.start, slicing1.stop))[slicing1]
+        if isinstance(slicing2, Sequence):
+            return [new_slicing[i] for i in slicing2]
+        else:
+            new_slicing = new_slicing[slicing2]
+            if isinstance(new_slicing, range):
+                return slice(new_slicing.start, new_slicing.stop, new_slicing.step)
+            else:
+                return new_slicing
+
+    elif isinstance(slicing1, Sequence):
+        if isinstance(slicing2, Sequence):
+            return [slicing1[i] for i in slicing2]
+        else:
+            return slicing1[slicing2]
+
+    raise ValueError(
+        f"Cannot merge indices {slicing1} and {slicing2}. slicing1 must be a slice or python check indexable."
+    )
+
+
+def _get_size(ind: ArrayIndex, size: int) -> int | None:
+    """
+    Get final size of an array after applying the indexing operation.
+
+    Parameters
+    ----------
+    ind : ArrayIndex
+        The indexing operation.
+    size : int
+        The size of the array before applying the indexing operation.
+
+    Returns
+    -------
+    int | None
+        The final size of the array after applying the indexing operation.
+    """
+    if isinstance(ind, slice):
+        return len(range(ind.start or 0, ind.stop or size, ind.step or 1))
+    elif isinstance(ind, Sequence):
+        return len(ind)
+    elif np.isscalar(ind):
+        return None
+    else:
+        raise ValueError(f"Expected scalar, sequence or slice, got type '{type(ind)}' with value {ind}")
+
+
+class GraphArrayView(BaseReadOnlyArray):
+    """
+    Class used to view the content of a graph as an array.
+
+    The resulting graph behaves as a read-only numpy array,
+    displaying arbitrary attributes inside their respective instance mask.
+
+    The content is lazy loaded from the original data source as
+    it's done with a [zarr.Array](https://zarr.readthedocs.io/en/stable/index.html)
+
+    Parameters
+    ----------
+    graph : BaseGraph
+        The graph to view as an array.
+    attr_key : str
+        The attribute key to view as an array.
+    offset : int | np.ndarray, optional
+        The offset to apply to the array.
+    shape : tuple[int, ...] | None, optional
+        The shape of the array. If None, the shape is inferred from the graph metadata `shape` key.
+    chunk_shape : tuple[int] | None, optional
+        The chunk shape for the array. If None, the default chunk size is used.
+    buffer_cache_size : int, optional
+        The maximum number of buffers to keep in the cache for the array.
+        If None, the default buffer cache size is used.
+    """
+
+    def __init__(
+        self,
+        graph: BaseGraph,
+        attr_key: str,
+        *,
+        offset: int | np.ndarray = 0,
+        shape: tuple[int, ...] | None = None,
+        chunk_shape: tuple[int, ...] | int | None = None,
+        buffer_cache_size: int | None = None,
+        dtype: np.dtype | None = None,
+    ):
+        if attr_key not in graph.node_attr_keys(return_ids=True):
+            raise ValueError(f"Attribute key '{attr_key}' not found in graph. Expected '{graph.node_attr_keys()}'")
+
+        self.graph = graph
+        self._attr_key = attr_key
+        self._offset = offset
+
+        if dtype is None:
+            # Infer the dtype from the graph's attribute
+            # TODO improve performance
+            df = graph.node_attrs(attr_keys=[self._attr_key])
+            if df.is_empty():
+                dtype = get_options().gav_default_dtype
+            else:
+                try:
+                    dtype = polars_dtype_to_numpy_dtype(df[self._attr_key].dtype, allow_sequence=False)
+                except ValueError as e:
+                    raise ValueError(f"Attribute values for key '{self._attr_key}' must be scalar.") from e
+                # napari support for bool is limited
+                if np.issubdtype(dtype, bool):
+                    dtype = np.uint8
+
+        self._dtype = dtype
+        self.original_shape = _validate_shape(shape, graph, "GraphArrayView")
+
+        chunk_shape = chunk_shape or get_options().gav_chunk_shape
+        if isinstance(chunk_shape, int):
+            chunk_shape = (chunk_shape,) * (len(self.original_shape) - 1)
+        elif len(chunk_shape) < len(self.original_shape) - 1:
+            chunk_shape = (1,) * (len(self.original_shape) - 1 - len(chunk_shape)) + tuple(chunk_shape)
+
+        self.chunk_shape = chunk_shape
+        self.buffer_cache_size = buffer_cache_size or get_options().gav_buffer_cache_size
+
+        self._indices = tuple(slice(0, s) for s in self.original_shape)
+        self._cache = NDChunkCache(
+            compute_func=self._fill_array,
+            shape=self.shape[1:],
+            chunk_shape=self.chunk_shape,
+            buffer_cache_size=self.buffer_cache_size,
+            dtype=self.dtype,
+        )
+
+        self._spatial_filter = self.graph.bbox_spatial_filter(
+            frame_attr_key=DEFAULT_ATTR_KEYS.T,
+            bbox_attr_key=DEFAULT_ATTR_KEYS.BBOX,
+        )
+        self.graph.node_added.connect(self._on_node_added)
+        self.graph.node_removed.connect(self._on_node_removed)
+        self.graph.node_updated.connect(self._on_node_updated)
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """Returns the shape of the array."""
+
+        shape = [_get_size(ind, os) for ind, os in zip(self._indices, self.original_shape, strict=True)]
+        return tuple(s for s in shape if s is not None)
+
+    @property
+    def size(self) -> int:
+        """Returns the total number of elements in the array."""
+        return int(np.prod(self.shape))
+
+    @property
+    def ndim(self) -> int:
+        """Returns the number of dimensions of the array."""
+        return len(self.shape)
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Returns the dtype of the array."""
+        return np.dtype(self._dtype)
+
+    def __getitem__(self, index: ArrayIndex) -> "GraphArrayView":
+        """Return a sliced view of the GraphArrayView.
+
+        Parameters
+        ----------
+        index : ArrayIndex
+            The indices to slice the array.
+
+        Returns
+        -------
+        GraphArrayView
+            A new GraphArrayView object with updated indices.
+        """
+        normalized_index = []
+        if not isinstance(index, tuple):
+            index = (index,)
+        if None in index:
+            raise ValueError("None is not allowed for GraphArrayView indexing.")
+        jj = 0
+        for oi in self._indices:
+            if np.isscalar(oi):
+                normalized_index.append(None)
+            else:
+                if len(index) <= jj:
+                    normalized_index.append(slice(None))
+                else:
+                    normalized_index.append(index[jj])
+                jj += 1
+
+        return self.reindex(normalized_index)
+
+    def reindex(
+        self,
+        slicing: Sequence[ArrayIndex],
+    ) -> "GraphArrayView":
+        """
+        Reindex the GraphArrayView.
+        Returns a shallow copy of the GraphArrayView with the new indices.
+
+        Parameters
+        ----------
+        slicing : tuple[ArrayIndex, ...]
+            The new indices to apply to the GraphArrayView.
+
+        Returns
+        -------
+        GraphArrayView
+            A new GraphArrayView object with updated indices.
+        """
+        obj = copy(self)
+        obj._indices = tuple(chain_indices(i1, i2) for i1, i2 in zip(self._indices, slicing, strict=False))
+        return obj
+
+    def __array__(
+        self,
+        dtype: np.dtype | None = None,
+        copy: bool | None = None,
+    ) -> np.ndarray:
+        """Convert the GraphArrayView to a numpy array.
+
+        Parameters
+        ----------
+        dtype : np.dtype, optional
+            The desired dtype of the output array. If None, the dtype of the GraphArrayView is used.
+        copy : bool, optional
+            This parameter is ignored, as the GraphArrayView is read-only.
+
+        Returns
+        -------
+        np.ndarray
+            In memory numpy array of the GraphArrayView of the current indices.
+        """
+
+        if sum(isinstance(i, Sequence) for i in self._indices) > 1:
+            raise NotImplementedError("Multiple sequences in indices are not supported for __array__.")
+
+        time = self._indices[0]
+        volume_slicing = self._indices[1:]
+
+        if np.isscalar(time):
+            try:
+                time = time.item()  # convert from numpy.int to int
+            except AttributeError:
+                pass
+            result = self._cache.get(
+                time=time,
+                volume_slicing=volume_slicing,
+            ).astype(dtype or self.dtype)
+            return np.array(result) if np.isscalar(result) else result
+        else:
+            if isinstance(time, slice):
+                time = range(self.original_shape[0])[time]
+
+            return np.stack(
+                [
+                    self._cache.get(
+                        time=t,
+                        volume_slicing=volume_slicing,
+                    )
+                    for t in time
+                ]
+            ).astype(dtype or self.dtype)
+
+    def _fill_array(self, time: int, volume_slicing: Sequence[slice], buffer: np.ndarray) -> np.ndarray:
+        """Fill the buffer with data from the graph at a specific time.
+
+        Parameters
+        ----------
+        time : int
+            The time point to retrieve data for.
+        volume_slicing : Sequence[slice]
+            The volume slicing information (currently not fully utilized).
+        buffer : np.ndarray
+            The buffer to fill with data.
+
+        Returns
+        -------
+        np.ndarray
+            The filled buffer.
+        """
+        subgraph = self._spatial_filter[(slice(time, time), *volume_slicing)]
+        df = subgraph.node_attrs(
+            attr_keys=[self._attr_key, DEFAULT_ATTR_KEYS.MASK],
+        )
+
+        for mask, value in zip(df[DEFAULT_ATTR_KEYS.MASK], df[self._attr_key], strict=True):
+            mask: Mask
+            mask.paint_buffer(buffer, value, offset=self._offset)
+
+    def _offset_as_array(self, ndim: int) -> np.ndarray:
+        """Normalize `offset` to a vector for each spatial axis."""
+        if np.isscalar(self._offset):
+            return np.full(ndim, int(self._offset), dtype=np.int64)
+
+        offset = np.asarray(self._offset, dtype=np.int64).reshape(-1)
+        if len(offset) != ndim:
+            raise ValueError(f"`offset` must have length {ndim}, got {len(offset)}")
+        return offset
+
+    def _bbox_to_slices(self, bbox: Any) -> tuple[slice, ...] | None:
+        """
+        Convert a bbox to clipped spatial slices in array coordinates.
+
+        Returns `None` when the bbox does not overlap the current array volume.
+        """
+        bbox = np.asarray(bbox, dtype=np.int64).reshape(-1)
+        ndim = len(self.original_shape) - 1
+        if len(bbox) != 2 * ndim:
+            raise ValueError(f"`bbox` must have length {2 * ndim}, got {len(bbox)}")
+
+        offset = self._offset_as_array(ndim)
+        start = bbox[:ndim] + offset
+        stop = bbox[ndim:] + offset
+
+        shape = np.asarray(self.original_shape[1:], dtype=np.int64)
+        start = np.clip(start, 0, shape)
+        stop = np.clip(stop, 0, shape)
+
+        if np.any(stop <= start):
+            return None
+
+        return tuple(slice(int(s), int(e)) for s, e in zip(start, stop, strict=True))
+
+    def _invalidate_bbox(self, time_values: Sequence[Any], bboxes: Sequence[np.ndarray | None]) -> None:
+        """
+        Invalidate the cache regions covered by the given times and bboxes.
+
+        ``time_values`` and ``bboxes`` are parallel sequences; each ``(time, bbox)``
+        pair is clipped to the array volume and the matching cache region is dropped.
+        A bbox that lies outside the array volume invalidates nothing.
+
+        A ``GraphArrayView`` requires every node to carry a ``bbox`` attribute, so a
+        ``None`` bbox is a programming error and raises ``ValueError``.
+        """
+        if hasattr(time_values, "to_list"):
+            time_values = time_values.to_list()
+
+        for time_value, bbox in zip(time_values, bboxes, strict=True):
+            try:
+                time = int(time_value)
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"Time attribute value must be a scalar integer, got {time_value!r} of type {type(time_value)}"
+                ) from e
+            if not (0 <= time < self.original_shape[0]):
+                continue
+
+            if bbox is None:
+                raise ValueError(
+                    f"Node at time {time} is missing a '{DEFAULT_ATTR_KEYS.BBOX}' attribute. "
+                    "A GraphArrayView requires every node to have a bbox."
+                )
+
+            slices = self._bbox_to_slices(bbox)
+            if slices is not None:
+                self._cache.invalidate(time=time, volume_slicing=slices)
+
+    def _on_node_added(
+        self,
+        node_ids: list[int],
+        new_attrs: list[dict],
+    ) -> None:
+        del node_ids
+        self._invalidate_bbox(
+            [attrs[DEFAULT_ATTR_KEYS.T] for attrs in new_attrs],
+            [attrs.get(DEFAULT_ATTR_KEYS.BBOX) for attrs in new_attrs],
+        )
+
+    def _on_node_removed(self, node_ids: list[int], old_attrs: list[dict]) -> None:
+        del node_ids
+        self._invalidate_bbox(
+            [attrs[DEFAULT_ATTR_KEYS.T] for attrs in old_attrs],
+            [attrs.get(DEFAULT_ATTR_KEYS.BBOX) for attrs in old_attrs],
+        )
+
+    def _on_node_updated(
+        self,
+        node_ids: list[int],
+        old_attrs: list[dict],
+        new_attrs: list[dict],
+    ) -> None:
+        del node_ids
+        time_values: list[Any] = []
+        bboxes: list[Any] = []
+        for old_attr, new_attr in zip(old_attrs, new_attrs, strict=True):
+            old_t = old_attr[DEFAULT_ATTR_KEYS.T]
+            new_t = new_attr[DEFAULT_ATTR_KEYS.T]
+            old_bbox = old_attr.get(DEFAULT_ATTR_KEYS.BBOX)
+            new_bbox = new_attr.get(DEFAULT_ATTR_KEYS.BBOX)
+
+            moved = old_t != new_t or not np.array_equal(old_bbox, new_bbox)
+
+            if moved:
+                # Node relocated: clear the stale region and paint the new one.
+                time_values.extend((old_t, new_t))
+                bboxes.extend((old_bbox, new_bbox))
+            elif old_attr.get(self._attr_key) != new_attr.get(self._attr_key) or self._mask_changed(old_attr, new_attr):
+                time_values.append(new_t)
+                bboxes.append(new_bbox)
+
+        self._invalidate_bbox(time_values, bboxes)
+
+    @staticmethod
+    def _mask_changed(old_attr: dict, new_attr: dict) -> bool:
+        """
+        Whether the painted output changed while the bbox stayed in place.
+
+        The rendered region depends on the displayed attribute value and the mask
+        pixels, so a mask swap with an unchanged bbox still requires invalidation.
+        """
+        old_mask = old_attr.get(DEFAULT_ATTR_KEYS.MASK)
+        new_mask = new_attr.get(DEFAULT_ATTR_KEYS.MASK)
+        if old_mask is None and new_mask is None:
+            return False
+        elif old_mask is None or new_mask is None:
+            return True
+        return old_mask != new_mask
