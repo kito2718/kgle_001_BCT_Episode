@@ -269,9 +269,9 @@ flowchart TD
 
 メイン処理(`biohub-cell-tracking-inference.py`)は非常に薄く、実処理はパッケージ側の `cli.run()` → `pipeline.run_pipeline()` に委譲されています。
 
-1. **環境セットアップと設定・SHA-256検証 (`biohub-cell-tracking-inference.py` L30-L145)**:
+1. **環境セットアップと設定(`biohub-cell-tracking-inference.py` L30-L145)**:
    - Kaggle上ではコードデータセット内のwheel(`biohub_tracking-*.whl`)を `pip install --no-index` し、ローカルでは `biohub_cell_tracking_kaggle/src` を `sys.path` に追加します(`setup_environment()`, L30-L72)。
-   - `shipped_config(variant)` (`recipe.py` L135-L151) が `IsotropicConfig()` のデフォルト値(=提出レシピ)に、選んだバリアントの6チェックポイントと6再スコアラーを取り付けて返します。このとき全ファイルのSHA-256を検証します。
+   - `shipped_config(variant)` (`recipe.py` L135-L151) が `IsotropicConfig()` のデフォルト値(=提出レシピ)に、選んだバリアントの6チェックポイントと6再スコアラーを取り付けて返します。
    - CUDA初期化前に `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` を設定し、8〜16GB GPUでの断片化OOMを防いでいます(L19)。
 2. **GPUごとに1ワーカー + ファイルシステムの共有キュー (`shard.py` L38-L65, L165-L264)**:
    - 各ワーカーは別プロセス(ノートブックのセルは `spawn` できないため `subprocess.Popen`)で起動され、設定はJSONで受け取ります。
