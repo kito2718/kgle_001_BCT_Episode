@@ -1,0 +1,14 @@
+{
+    "channel_names": {
+        "0": "biohub_raw"
+    },
+    "labels": {
+        "background": 0,
+        "cell_center": 1,
+        "ignore": 2
+    },
+    "numTraining": 18933,
+    "file_ending": ".nii.gz",
+    "name": "BiohubCellCenterHeatmap",
+    "description": "Single-frame 3D cell-centre detection with local sparse supervision"
+}
