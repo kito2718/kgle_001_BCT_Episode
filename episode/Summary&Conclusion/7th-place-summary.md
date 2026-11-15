@@ -181,13 +181,13 @@ flowchart TD
 
 ### ◆Stage0. 実行基盤(TensorRT高速化・動的スケジューリング・SCIP自動リカバリ)
 
-Kaggleの「Tesla T4×2枚・制限時間」の中で、重い3Dフルボリューム推論と厳密ILPを安定して完走させるための仕組みです([biohub-7th-place-inference.py](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/biohub-7th-place-inference.py)、[`choice_worker.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/choice_worker.py))。
+Kaggleの「Tesla T4×2枚・制限時間」の中で、重い3Dフルボリューム推論と厳密ILPを安定して完走させるための実装`biohub-7th-place-inference.py`、`choice_worker.py`。
 
 | 仕組み | 内容 | 該当コード |
 | :--- | :--- | :--- |
-| **① ビルド済みFP16 TensorRTエンジン** | Kaggle T4環境では、3D nnU-Net検出器と分裂BiGRUの3D CNN部分をビルド済みTensorRTエンジン(`.engine`)で高速実行。ローカルGPU環境では自動的に通常のPyTorch FP16推論へ切り替わる。 | [`trt_backend.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/trt_backend.py)<br>[`division_trt_backend.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/division_trt_backend.py) |
-| **② 大きい動画優先の動的ワーカー分配** | Stage1の検出が終わった動画(`.pkl`)から順に、ファイルサイズが大きい(細胞数が多い)動画を優先して複数ワーカーがディレクトリ作成ロック(`claim.mkdir()`)で早い者勝ち取得。 | [`choice_worker.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/choice_worker.py#L6-L25) `dynamic_claims()` |
-| **③ SCIP高速モードと自動リカバリ** | ノード数30,000以下の動画ではSCIPのカット分離(`SEPARATION_OFF`)を切って高速求解。もし時間制限に達した場合は、自動で標準SCIP設定に切り替えて再求解し、必ず厳密最適解(`gap=0%`)を保証する。 | [`choice_worker.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/choice_worker.py#L96-L116) |
+| **① ビルド済みFP16 TensorRTエンジン** | Kaggle T4環境では、3D nnU-Net検出器と分裂BiGRUの3D CNN部分をビルド済みTensorRTエンジン(`.engine`)で高速実行。ローカルGPU環境では自動的に通常のPyTorch FP16推論へ切り替わる。 | `trt_backend.py`<br>`division_trt_backend.py` |
+| **② 大きい動画優先の動的ワーカー分配** | Stage1の検出が終わった動画(`.pkl`)から順に、ファイルサイズが大きい(細胞数が多い)動画を優先して複数ワーカーがディレクトリ作成ロック(`claim.mkdir()`)で早い者勝ち取得。 | `choice_worker.py`、`dynamic_claims()` |
+| **③ SCIP高速モードと自動リカバリ** | ノード数30,000以下の動画ではSCIPのカット分離(`SEPARATION_OFF`)を切って高速求解。もし時間制限に達した場合は、自動で標準SCIP設定に切り替えて再求解し、必ず厳密最適解(`gap=0%`)を保証する。 | `choice_worker.py`#L96-L116 |
 
 ---
 
@@ -231,7 +231,7 @@ flowchart LR
 #### 1-3. 逆方向投影による候補リンクの作成 (`biohub_motion_ilp_fold.py`)
 1. **ピーク検出とNMS**: 検出確率マップから局所最大値(閾値 `0.30` または `0.28`)を取り、物理距離 `2.0 µm` のGreedy NMSで細胞中心を抽出します。
 2. **前フレームへの逆方向投影**: 時刻 $t$ の各細胞 $j$ の周囲(半径 $2.0\,\mu\text{m}$ 以内、$\sigma=1.0\,\mu\text{m}$ ガウス重み)から予測変位ベクトルを取り出して現在座標に足し合わせ、「時刻 $t-1$ で親がいそうな予測座標」を求めます。
-3. **残差距離による候補リンク採点**: 予測座標から **残差距離 $d_{ij}$ が $7.0\,\mu\text{m}$ 以内** にある時刻 $t-1$ の実検出細胞 $i$ を近い順に最大5個選び、以下の式でリンクスコア $s_{ij}$ を計算します([`biohub_motion_ilp_fold.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/legacy/biohub_motion_ilp_fold.py))。
+3. **残差距離による候補リンク採点**: 予測座標から **残差距離 $d_{ij}$ が $7.0\,\mu\text{m}$ 以内** にある時刻 $t-1$ の実検出細胞 $i$ を近い順に最大5個選び、以下の式でリンクスコア $s_{ij}$ を計算します`biohub_motion_ilp_fold.py`。
 $$s_{ij} = \exp\left(-\frac{d_{ij}^2}{2 \times (3\,\mu\text{m})^2}\right) \times \sqrt{q_i \times q_j}$$
 - **※欄外補足(数学記号と用語の意味)**:
   - $\exp(x)$ : 自然対数の底 $e \approx 2.718$ の $x$ 乗($e^x$)を表す指数関数。ここでは $x$ がマイナスなので、ズレ $d_{ij}$ が $0$ のとき最大値 $\exp(0) = 1$ になり、ズレが大きくなるほど滑らかに $0$ へ近づく「ガウス減衰(釣鐘型のスコア)」になります。
@@ -255,7 +255,7 @@ flowchart LR
 ```
 
 #### 2-1. ① 親細胞の分裂画像分類器 (`parent.py`, `biohub_division_sliding_t3_mil.py`)
-候補リンクが2本以上出ている親候補(分岐可能ノード)に対し、周囲 `Z=12 × Y=48 × X=48` ボクセル・前後5フレーム $(t-2, t-1, t, t+1, t+2)$ の画像を切り出して分裂確率を判定します([`parent.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/parent.py))。
+候補リンクが2本以上出ている親候補(分岐可能ノード)に対し、周囲 `Z=12 × Y=48 × X=48` ボクセル・前後5フレーム $(t-2, t-1, t, t+1, t+2)$ の画像を切り出して分裂確率を判定します`parent.py`。
 
 1. **動き合わせ(アライメント)後の画像差分 (`SparseLocalFlow`)**:
    単に時刻 $t$ と $t+1$ の画像を引き算すると、細胞が普通に横へ移動しただけの変化が強く出てしまいます。そこで周囲の検出細胞の動きから局所的な平行移動量を推定し、前後の画像を現在の細胞位置に重ね合わせてから差分を取ります。すると「親の位置が暗くなり、両脇の娘2か所が明るく浮かび上がる」という分裂特有のパターンが綺麗に見えます。
@@ -276,13 +276,13 @@ flowchart LR
 | **局所軌跡特徴 (`traj_tm1`〜`tp4`)** | 73個の内数 | 前後フレーム($t-1 \sim t+4$)でその娘ペアが「1つの親から分かれた軌跡として自然か、最初から別々の2本のトラックか」を測る距離特徴 |
 | **娘周辺の画像特徴 (`image_*`)** | **+18個**<br>(計91個) | 各娘の中心輝度、狭い芯(`core`: $3\times 5\times 5$)の平均・最大・標準偏差、外周(`outer`: $7\times 11\times 11$)の平均、芯と外周のコントラスト(6項目 × 2つの娘の **最小・最大・絶対差** = 18個) |
 
-- **ExtraTrees(73特徴)** で基礎ペアスコアを出し、さらに18個の画像特徴を加えた **91特徴量の5シードLightGBMアンサンブル**([`daughter_image_lgb5_runtime.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/daughter_image_lgb5_runtime.py))で各親候補内の娘ペア順位を更新します。
+- **ExtraTrees(73特徴)** で基礎ペアスコアを出し、さらに18個の画像特徴を加えた **91特徴量の5シードLightGBMアンサンブル**`daughter_image_lgb5_runtime.py`で各親候補内の娘ペア順位を更新します。
 
 #### 2-3. ③ 分裂イベント統合MLP (`choice_features.py`, `division_new_transfer.py`)
-最後に、「親Pが娘A・Bに分裂した」という仮説と、「実は隣に別の親Qがいて、P→A と Q→B の2本の通常移動だった」という代替仮説を比較するため、**83入力・隠れ層32(SiLU)・1出力の小型MLP(`nn_h.pt`, SWA重み)** で最終判定を行います([`division_new_transfer.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/division_new_transfer.py))。
+最後に、「親Pが娘A・Bに分裂した」という仮説と、「実は隣に別の親Qがいて、P→A と Q→B の2本の通常移動だった」という代替仮説を比較するため、**83入力・隠れ層32(SiLU)・1出力の小型MLP(`nn_h.pt`, SWA重み)** で最終判定を行います`division_new_transfer.py`。
 - **83次元の内訳**:
   1. 幾何・前後軌跡特徴 (**73個**)
-  2. **競合する別親との比較特徴 (`alt_*`: 7個)** — 他の親候補から娘A・Bへの最短距離(`alt_origin_min/max`)、自親Pと別親Qの距離差マージン(`alt_margin_min/max`)、通常継続2本で説明した場合のコスト(`alt_continuation_cost`)、分裂コストとの差(`alt_split_minus_continue`) ([`choice_features.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/choice_features.py))
+  2. **競合する別親との比較特徴 (`alt_*`: 7個)** — 他の親候補から娘A・Bへの最短距離(`alt_origin_min/max`)、自親Pと別親Qの距離差マージン(`alt_margin_min/max`)、通常継続2本で説明した場合のコスト(`alt_continuation_cost`)、分裂コストとの差(`alt_split_minus_continue`) `choice_features.py`。
   3. 親の検出スコア (**1個**) + ①親BiGRUの分裂ロジット (**1個**) + ②ExtraTreesの娘ペア確率 (**1個**)
 - MLPの出力ロジット $v$ は $-0.2 \tanh(v)$ によって有界なペア報酬に変換され(さらにBiGRUロジット $\ge 4.0$ かつペアスコア $\ge 0.8$ の強い分裂候補が負ロジットで消されないよう0へ保護するブリッジ処理付き)、Stage3のILP目的関数へ渡されます。
 
@@ -296,7 +296,7 @@ flowchart LR
 - **Writeup解説の基本思想(2段階ILP)**:
   1回目のILPで暫定的な系譜グラフを作り、そこで選ばれた分岐点(および未評価の有望な分裂候補)に対してStage2-③のMLPで「本当に分裂か、別親からの継続か」を再採点し、**元の候補グラフ全体に対して2回目のILPを解き直す**ことで、局所的な手直しではなく大域的な整合性を保ったまま繋ぎ直します。
 - **公開推論コードの高速化(`preilp_pairs.py` + `solve_choice.py`)**:
-  提出ノートブック([`preilp_pairs.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/preilp_pairs.py))では、11特徴の軽量な線形サロゲートモデル(`parent_surrogate_all40.json`)で動画内の有望な親候補上位1,536個を事前に絞り込み、LightGBM上位3ペアとの和集合に対して最初からMLP(`nn_h.pt`)の評価を完了させることで、**重たいSCIPソルバーの実行を動画あたり1回に集約**しています。
+  `preilp_pairs.py`では、11特徴の軽量な線形サロゲートモデル(`parent_surrogate_all40.json`)で動画内の有望な親候補上位1,536個を事前に絞り込み、LightGBM上位3ペアとの和集合に対して最初からMLP(`nn_h.pt`)の評価を完了させることで、**重たいSCIPソルバーの実行を動画あたり1回に集約**しています。
 
 #### 3-2. コスト設計と厳密ソルバー (`CertifiedPairSolver`)
 | 要素 | コスト・制約の設定 | 平易な意味 |
@@ -307,7 +307,7 @@ flowchart LR
 | **娘ペア同時選択報酬** | $-0.2 \cdot p_{\text{parent}} \cdot q_{\text{pair}}$ + MLP報酬 | 親の分裂確率と娘ペアスコアが高く、かつMLPが「本物の分裂」と認めたペアを2本同時に選んだときだけコストを大幅に割り引く(逆に通常継続の方が自然な場合はペナルティを課す) |
 
 1. **2段階ウォームスタート(初期解の注入)**:
-   いきなりSCIPでゼロから探索させると時間がかかるため、①確率の高い順に1対1で繋いだ貪欲解と、②**Google OR-Toolsの最小費用流(`SimpleMinCostFlow`)** で高速に解いた解の2つを初期解(`addSol`)としてSCIPに渡します([`solve.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/solve.py#L60-L99))。
+   いきなりSCIPでゼロから探索させると時間がかかるため、①確率の高い順に1対1で繋いだ貪欲解と、②**Google OR-Toolsの最小費用流(`SimpleMinCostFlow`)** で高速に解いた解の2つを初期解(`addSol`)としてSCIPに渡します`solve.py`。
 2. **ペア報酬の折りたたみ(`BIOHUB_PAIR_FOLD_MODE='fold'`)**:
    候補リンクが最初から2本しか出ていない親細胞では、「2本のリンクを両方選ぶこと」と「その親が分裂すること」が完全に同じ意味になるため、ペア用の補助変数を作らず親の分裂コストへ報酬を直接合算し、ソルバーを軽量化しています。
 3. **最適性ギャップ0%(`gap=0`)の厳密証明**:
@@ -317,7 +317,7 @@ flowchart LR
 
 ### ◆Stage4. 観察エラーに基づく4つのグラフ後処理 (`final_post.py`, `postbest.py`, `boundary_mean1_post.py`, `first_projection.py`)
 
-ILPで大域的に整合したグラフを作った後、実際の予測データを観察して見つかった4種類のエラーを順番に補正します([`final_post.py`](file:///c:/work/aaa/kgle_001_BCT_Episode/episode/7thPlaceSolution/src/runtime/final_post.py))。
+ILPで大域的に整合したグラフを作った後、実際の予測データを観察して見つかった4種類のエラーを順番に補正します`final_post.py`。
 
 | 対象エラー | 後処理の内容 (`final_post.py` の設定値) | 暴走を防ぐ安全策(Safeguards) |
 | :--- | :--- | :--- |
