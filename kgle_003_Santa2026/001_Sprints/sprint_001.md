@@ -52,4 +52,5 @@
 - **2026-11-25**:
   - Sprint 000 を完了 (初回提出 128,219手 / 341位)。
   - POからのレビューを受け、Sprint 001 を正式に計画・立案。
-  - S001-1 に着手: 本コンペに関わる計算機科学・応用数学の学術文献、関連学会(STOC, SODA, CP, CPAIOR, POPL)、重要論文(Knuth, Yao, Downey, Bos-Coster, Gulwani, Shaw等)を徹底調査し、`002_Design/03_REFERENCES.md` に集約完了。
+  - S001-1 に着手: 本コンペに関わる計算機科学・応用数学の学術文献、関連学会(STOC, SODA, CP, CPAIOR, POPL)、重要論文(Knuth, Yao, Downey, Bos-Coster, Gulwani, Shaw等)を徹底調査。
+  - POからの追加指示に基づき、「虎の巻」のAI駆動フレームワークに加え、本コンペおよび歴代Santa最適化コンペ(2021〜2024)・類似最適化コンペのDiscussionマイニング手法・勝者の4大鉄則を体系化し、`002_Design/03_REFERENCES.md` (第7章) に反映完了。
