@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Santa: 1. Verify Current Portfolio (採点・全問検証)",
+      "type": "shell",
+      "command": "python verify_all.py",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Santa: 2. Package Submission CSV (提出ファイル生成)",
+      "type": "shell",
+      "command": "python portfolio.py --export-submission output/submission.csv",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Santa: 3. Submit to Kaggle (Kaggle提出)",
+      "type": "shell",
+      "command": "kaggle competitions submit -c santa-2026 -f output/submission.csv -m 'Automated submission from Current Best Portfolio'",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
